@@ -1,0 +1,13 @@
+# .cursorrules
+
+Tu travailles sur PecheLog, une app de journal de pêche.
+Stack: React Native + Expo (SDK 52), TypeScript, Supabase.
+
+Règles :
+- Toujours utiliser TypeScript
+- Composants fonctionnels avec hooks React
+- Style avec StyleSheet.create() (pas de Tailwind)
+- Tout le texte en français (interface québécoise)
+- Supporter le mode hors-ligne (WatermelonDB)
+- Thème sombre avec accent #00D4AA
+- Tester sur iOS ET Android

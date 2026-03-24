@@ -1,0 +1,2119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PêcheLog — Prototype Interactif</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-deep: #0B1A2B;
+  --bg-card: #122236;
+  --bg-surface: #1A2E45;
+  --bg-elevated: #213A56;
+  --accent: #00D4AA;
+  --accent-glow: rgba(0,212,170,0.25);
+  --accent-warm: #FF8C42;
+  --accent-blue: #4DA6FF;
+  --text-primary: #EAF0F7;
+  --text-secondary: #8AA4C0;
+  --text-muted: #5A7A9A;
+  --danger: #FF5A5A;
+  --success: #00D4AA;
+  --border: rgba(138,164,192,0.12);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-xs: 6px;
+  --shadow: 0 8px 32px rgba(0,0,0,0.3);
+  --font: 'Outfit', sans-serif;
+  --mono: 'Space Mono', monospace;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+html, body {
+  font-family: var(--font);
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ============ PHONE FRAME ============ */
+.phone-frame {
+  width: 390px;
+  height: 844px;
+  margin: 20px auto;
+  border-radius: 44px;
+  border: 3px solid #2A3F5A;
+  background: var(--bg-deep);
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 0 60px rgba(0,212,170,0.08), 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.phone-notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 160px;
+  height: 34px;
+  background: #000;
+  border-radius: 0 0 20px 20px;
+  z-index: 100;
+}
+
+.phone-notch::after {
+  content: '';
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60px;
+  height: 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+}
+
+/* ============ SCREENS ============ */
+.screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-top: 50px;
+  transition: opacity 0.3s, transform 0.3s;
+}
+
+.screen.active {
+  display: flex;
+}
+
+.screen.slide-in {
+  animation: slideIn 0.35s ease-out;
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity:0; }
+  to { transform: translateX(0); opacity:1; }
+}
+
+@keyframes fadeIn {
+  from { opacity:0; transform: translateY(10px); }
+  to { opacity:1; transform: translateY(0); }
+}
+
+.fade-child > * {
+  animation: fadeIn 0.4s ease-out both;
+}
+.fade-child > *:nth-child(1) { animation-delay: 0.05s; }
+.fade-child > *:nth-child(2) { animation-delay: 0.1s; }
+.fade-child > *:nth-child(3) { animation-delay: 0.15s; }
+.fade-child > *:nth-child(4) { animation-delay: 0.2s; }
+.fade-child > *:nth-child(5) { animation-delay: 0.25s; }
+.fade-child > *:nth-child(6) { animation-delay: 0.3s; }
+.fade-child > *:nth-child(7) { animation-delay: 0.35s; }
+
+/* ============ LOGIN SCREEN ============ */
+#login-screen {
+  justify-content: center;
+  align-items: center;
+  padding: 40px 30px;
+  background: linear-gradient(170deg, #0B1A2B 0%, #0F2238 40%, #132D4A 100%);
+}
+
+.login-logo {
+  width: 100px;
+  height: 100px;
+  border-radius: 28px;
+  background: linear-gradient(135deg, var(--accent), #00A888);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  margin-bottom: 20px;
+  box-shadow: 0 8px 40px rgba(0,212,170,0.3);
+}
+
+.login-title {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-bottom: 6px;
+}
+
+.login-subtitle {
+  color: var(--text-secondary);
+  font-size: 15px;
+  margin-bottom: 40px;
+}
+
+.login-btn {
+  width: 100%;
+  padding: 16px 20px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  transition: all 0.2s;
+}
+
+.login-btn:hover { background: var(--bg-surface); border-color: var(--accent); }
+.login-btn:active { transform: scale(0.98); }
+
+.login-btn .icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.login-btn .icon.google { background: #fff; color: #4285F4; }
+.login-btn .icon.apple { background: #fff; color: #000; }
+.login-btn .icon.facebook { background: #1877F2; color: #fff; }
+
+.login-terms {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  margin-top: 30px;
+  line-height: 1.5;
+}
+
+/* ============ HOME SCREEN ============ */
+#home-screen {
+  padding-bottom: 90px;
+}
+
+.home-header {
+  padding: 10px 24px 20px;
+}
+
+.home-greeting {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.home-name {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.home-weather {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.weather-badge {
+  background: var(--bg-surface);
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* Quick Log Button */
+.quick-log-btn {
+  margin: 8px 24px 24px;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, var(--accent), #00B893);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 4px 20px rgba(0,212,170,0.3);
+  border: none;
+  color: #0B1A2B;
+  width: calc(100% - 48px);
+  text-align: left;
+}
+
+.quick-log-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 30px rgba(0,212,170,0.4); }
+.quick-log-btn:active { transform: scale(0.98); }
+
+.quick-log-icon {
+  width: 52px;
+  height: 52px;
+  background: rgba(11,26,43,0.2);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+
+.quick-log-text h3 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.quick-log-text p {
+  font-size: 13px;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* Stats Summary */
+.stats-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  padding: 0 24px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.stat-value {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Recent Catches */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 24px;
+  margin-bottom: 14px;
+}
+
+.section-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.section-link {
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.catch-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 24px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.catch-card:hover { background: var(--bg-card); }
+
+.catch-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.catch-info { flex:1; }
+.catch-species { font-weight: 600; font-size: 15px; }
+.catch-meta { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+.catch-size { 
+  font-family: var(--mono); 
+  font-size: 14px; 
+  color: var(--accent-warm);
+  font-weight: 700;
+}
+
+/* ============ LOG CATCH SCREEN ============ */
+#log-screen {
+  padding-bottom: 100px;
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 24px 20px;
+}
+
+.back-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 18px;
+  transition: background 0.15s;
+}
+
+.back-btn:hover { background: var(--bg-elevated); }
+
+.log-header h2 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.log-section {
+  padding: 0 24px;
+  margin-bottom: 20px;
+}
+
+.log-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+/* Auto-filled badges */
+.auto-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.auto-field {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 8px 14px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.auto-field .af-icon { font-size: 14px; }
+.auto-field .af-label { color: var(--text-muted); font-size: 11px; }
+.auto-field .af-value { font-weight: 500; }
+.auto-field.auto { border-color: rgba(0,212,170,0.3); }
+.auto-field.auto .af-value { color: var(--accent); }
+
+/* Input fields */
+.log-input-group { margin-bottom: 14px; }
+
+.log-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  display: block;
+}
+
+.log-input {
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.log-input:focus { border-color: var(--accent); }
+
+.log-input::placeholder { color: var(--text-muted); }
+
+/* Chip Selectors */
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--font);
+  color: var(--text-secondary);
+}
+
+.chip:hover { border-color: var(--text-muted); }
+.chip.selected { 
+  background: rgba(0,212,170,0.12); 
+  border-color: var(--accent); 
+  color: var(--accent); 
+  font-weight: 500;
+}
+
+/* Size Toggle */
+.size-toggle {
+  display: flex;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.size-toggle-btn {
+  flex: 1;
+  padding: 10px;
+  text-align: center;
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.size-toggle-btn.active {
+  background: var(--accent);
+  color: var(--bg-deep);
+}
+
+/* Photo upload */
+.photo-upload {
+  display: flex;
+  gap: 10px;
+}
+
+.photo-slot {
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 2px dashed var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.photo-slot:hover { border-color: var(--accent); }
+.photo-slot .ps-icon { font-size: 22px; }
+.photo-slot .ps-text { font-size: 10px; color: var(--text-muted); }
+
+/* Map selector */
+.map-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.map-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.map-option:hover { border-color: var(--text-muted); }
+.map-option.selected { border-color: var(--accent); background: rgba(0,212,170,0.06); }
+
+.map-option .mo-radio {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map-option.selected .mo-radio {
+  border-color: var(--accent);
+}
+
+.map-option.selected .mo-radio::after {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.map-option .mo-info { flex:1; }
+.map-option .mo-name { font-weight: 500; font-size: 14px; }
+.map-option .mo-desc { font-size: 12px; color: var(--text-muted); }
+
+/* Save button */
+.save-btn {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 342px;
+  padding: 16px;
+  background: linear-gradient(135deg, var(--accent), #00B893);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--bg-deep);
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0,212,170,0.35);
+  transition: all 0.2s;
+  z-index: 50;
+}
+
+.save-btn:hover { transform: translateX(-50%) translateY(-2px); }
+.save-btn:active { transform: translateX(-50%) scale(0.98); }
+
+/* ============ MAP SCREEN ============ */
+#map-screen {
+  padding-bottom: 90px;
+}
+
+.map-container {
+  width: 100%;
+  height: 340px;
+  background: #0D2137;
+  position: relative;
+  overflow: hidden;
+}
+
+.map-placeholder {
+  width: 100%;
+  height: 100%;
+  background: 
+    radial-gradient(ellipse at 40% 50%, rgba(0,100,180,0.15) 0%, transparent 60%),
+    radial-gradient(ellipse at 70% 30%, rgba(0,80,160,0.1) 0%, transparent 50%),
+    linear-gradient(180deg, #091929 0%, #0D2137 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+/* Lake outlines */
+.map-lake {
+  position: absolute;
+  border: 2px solid rgba(0,150,255,0.25);
+  border-radius: 50%;
+  background: rgba(0,100,200,0.08);
+}
+
+.map-lake.l1 { width: 120px; height: 80px; top: 60px; left: 30px; border-radius: 60% 40% 50% 50%; }
+.map-lake.l2 { width: 160px; height: 100px; top: 120px; left: 170px; border-radius: 40% 60% 45% 55%; }
+.map-lake.l3 { width: 90px; height: 60px; top: 220px; left: 80px; border-radius: 50% 50% 40% 60%; }
+
+/* Map pins */
+.map-pin {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: transform 0.2s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.map-pin:hover { transform: scale(1.2); }
+.map-pin.fish { background: var(--accent); }
+.map-pin.hot { background: var(--accent-warm); }
+.map-pin::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+}
+.map-pin.fish::after { border-top: 8px solid var(--accent); }
+.map-pin.hot::after { border-top: 8px solid var(--accent-warm); }
+
+.map-pin.p1 { top: 75px; left: 60px; }
+.map-pin.p2 { top: 90px; left: 90px; }
+.map-pin.p3 { top: 140px; left: 220px; }
+.map-pin.p4 { top: 170px; left: 260px; }
+.map-pin.p5 { top: 235px; left: 110px; }
+
+/* Bathymetry legend */
+.bathy-legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  background: rgba(11,26,43,0.85);
+  backdrop-filter: blur(8px);
+  border-radius: var(--radius-xs);
+  padding: 8px 12px;
+  font-size: 10px;
+}
+
+.bathy-legend-title {
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.bathy-colors {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.bathy-swatch {
+  width: 20px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.bathy-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 9px;
+  margin-top: 2px;
+}
+
+/* Map search */
+.map-search {
+  position: absolute;
+  top: 60px;
+  left: 12px;
+  right: 12px;
+  background: rgba(18,34,54,0.9);
+  backdrop-filter: blur(12px);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+}
+
+.map-search input {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  outline: none;
+  flex: 1;
+}
+
+.map-search input::placeholder { color: var(--text-muted); }
+
+/* Lake info cards */
+.map-lake-cards {
+  padding: 20px 24px;
+}
+
+.lake-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.lake-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+.lake-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.lake-card-name {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.lake-card-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(0,212,170,0.1);
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+.lake-card-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lake-tag {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+/* ============ STATS SCREEN ============ */
+#stats-screen {
+  padding-bottom: 90px;
+}
+
+.stats-header {
+  padding: 10px 24px 16px;
+}
+
+.stats-header h2 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+/* Filter chips */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  padding: 0 24px;
+  overflow-x: auto;
+  margin-bottom: 20px;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.filter-bar::-webkit-scrollbar { display: none; }
+
+.filter-chip {
+  padding: 8px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+}
+
+.filter-chip.active { background: rgba(0,212,170,0.12); border-color: var(--accent); color: var(--accent); }
+
+/* Chart placeholder */
+.chart-container {
+  margin: 0 24px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.chart-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 120px;
+}
+
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.bar {
+  width: 100%;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.5s ease;
+}
+
+.bar-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.bar-value {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+/* Species breakdown */
+.species-list {
+  padding: 0 24px;
+}
+
+.species-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.species-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.species-info { flex: 1; }
+.species-name { font-weight: 500; font-size: 14px; }
+
+.species-bar-container {
+  height: 6px;
+  background: var(--bg-surface);
+  border-radius: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.species-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.species-count {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* ============ SHARE SCREEN ============ */
+#share-screen {
+  padding-bottom: 90px;
+}
+
+.share-header {
+  padding: 10px 24px 20px;
+}
+
+.share-header h2 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.share-header p {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.share-card {
+  margin: 0 24px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.share-card:hover { border-color: var(--accent); }
+
+.share-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  margin-bottom: 12px;
+}
+
+.share-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.share-card p { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
+
+.shared-with-me {
+  padding: 0 24px;
+  margin-top: 12px;
+}
+
+.shared-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.shared-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-blue);
+}
+
+.shared-info { flex: 1; }
+.shared-name { font-size: 14px; font-weight: 500; }
+.shared-desc { font-size: 12px; color: var(--text-muted); }
+
+.shared-badge {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  color: var(--accent-blue);
+}
+
+/* ============ SETTINGS SCREEN ============ */
+#settings-screen {
+  padding-bottom: 90px;
+}
+
+.settings-header {
+  padding: 10px 24px 20px;
+}
+
+.settings-header h2 {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.settings-group {
+  padding: 0 24px;
+  margin-bottom: 24px;
+}
+
+.settings-group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.settings-item-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-item-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.settings-item-label { font-size: 14px; font-weight: 500; }
+.settings-item-value { font-size: 13px; color: var(--text-muted); }
+
+/* Toggle */
+.toggle {
+  width: 44px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--bg-elevated);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.toggle.on { background: var(--accent); }
+
+.toggle::after {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.2s;
+}
+
+.toggle.on::after { transform: translateX(18px); }
+
+/* ============ TAB BAR ============ */
+.tab-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 82px;
+  background: rgba(11,26,43,0.95);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  padding-top: 8px;
+  z-index: 90;
+}
+
+.tab-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 6px;
+  transition: all 0.15s;
+}
+
+.tab-icon {
+  font-size: 22px;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.tab-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+  transition: color 0.15s;
+}
+
+.tab-item.active .tab-icon { opacity: 1; }
+.tab-item.active .tab-label { color: var(--accent); }
+
+/* ============ OFFLINE INDICATOR ============ */
+.offline-bar {
+  position: absolute;
+  top: 40px;
+  left: 12px;
+  right: 12px;
+  background: var(--accent-warm);
+  color: var(--bg-deep);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  padding: 6px;
+  border-radius: var(--radius-xs);
+  z-index: 99;
+  display: none;
+  animation: fadeIn 0.3s;
+}
+
+.offline-bar.show { display: block; }
+
+/* ============ TOAST ============ */
+.toast {
+  position: absolute;
+  bottom: 100px;
+  left: 24px;
+  right: 24px;
+  background: var(--success);
+  color: var(--bg-deep);
+  padding: 14px 20px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: center;
+  z-index: 100;
+  display: none;
+  animation: fadeIn 0.3s;
+}
+
+/* ============ PRECONFIG MODAL ============ */
+.modal-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 95;
+  display: none;
+  align-items: flex-end;
+}
+
+.modal-overlay.show { display: flex; }
+
+.modal-sheet {
+  width: 100%;
+  background: var(--bg-card);
+  border-radius: 24px 24px 0 0;
+  padding: 24px;
+  max-height: 70%;
+  overflow-y: auto;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.modal-handle {
+  width: 40px;
+  height: 4px;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  margin: 0 auto 20px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+/* ============ RESPONSIVE ============ */
+@media (max-width: 430px) {
+  .phone-frame {
+    width: 100%;
+    height: 100vh;
+    margin: 0;
+    border-radius: 0;
+    border: none;
+  }
+  .save-btn {
+    width: calc(100% - 48px);
+  }
+}
+
+/* Scrollbar styling */
+.screen::-webkit-scrollbar { width: 0; }
+</style>
+</head>
+<body>
+
+<div class="phone-frame" id="phone">
+  <div class="phone-notch"></div>
+  
+  <!-- Offline indicator -->
+  <div class="offline-bar" id="offlineBar">📡 Mode hors-ligne — Les données seront synchronisées au retour du signal</div>
+  
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <!-- ==================== LOGIN SCREEN ==================== -->
+  <div class="screen active fade-child" id="login-screen">
+    <div class="login-logo">🐟</div>
+    <div class="login-title">PêcheLog</div>
+    <div class="login-subtitle">Votre journal de pêche intelligent</div>
+    
+    <button class="login-btn" onclick="login()">
+      <span class="icon google">G</span>
+      Continuer avec Google
+    </button>
+    <button class="login-btn" onclick="login()">
+      <span class="icon apple">🍎</span>
+      Continuer avec Apple
+    </button>
+    <button class="login-btn" onclick="login()">
+      <span class="icon facebook">f</span>
+      Continuer avec Facebook
+    </button>
+    
+    <div class="login-terms">
+      En continuant, vous acceptez nos<br>
+      <span style="color:var(--accent);cursor:pointer">Conditions d'utilisation</span> et 
+      <span style="color:var(--accent);cursor:pointer">Politique de confidentialité</span>
+    </div>
+  </div>
+
+  <!-- ==================== HOME SCREEN ==================== -->
+  <div class="screen" id="home-screen">
+    <div class="home-header fade-child">
+      <div class="home-greeting">Bonjour 👋</div>
+      <div class="home-name">Marc-Antoine</div>
+      <div class="home-weather">
+        <span>☀️ Lac Saint-Jean</span>
+        <span class="weather-badge">🌡 22°C</span>
+        <span class="weather-badge">💨 12 km/h</span>
+      </div>
+    </div>
+
+    <button class="quick-log-btn" onclick="showScreen('log-screen')">
+      <div class="quick-log-icon">🎣</div>
+      <div class="quick-log-text">
+        <h3>Nouvelle prise !</h3>
+        <p>Touche 1 bouton — on s'occupe du reste</p>
+      </div>
+    </button>
+
+    <div class="stats-row fade-child">
+      <div class="stat-card">
+        <div class="stat-value">47</div>
+        <div class="stat-label">Prises</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">12</div>
+        <div class="stat-label">Lacs</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">8.2</div>
+        <div class="stat-label">lb record</div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <span class="section-title">Prises récentes</span>
+      <span class="section-link" onclick="showScreen('stats-screen'); activateTab(2)">Voir tout →</span>
+    </div>
+
+    <div class="catch-card" onclick="showScreen('log-screen')">
+      <div class="catch-thumb">🐟</div>
+      <div class="catch-info">
+        <div class="catch-species">Doré jaune</div>
+        <div class="catch-meta">Lac Saint-Jean · il y a 2h · Rapala X-Rap</div>
+      </div>
+      <div class="catch-size">4.2 lb</div>
+    </div>
+
+    <div class="catch-card">
+      <div class="catch-thumb">🐠</div>
+      <div class="catch-info">
+        <div class="catch-species">Brochet</div>
+        <div class="catch-meta">Lac Kénogami · hier · Cuillère Mepps</div>
+      </div>
+      <div class="catch-size">6.1 lb</div>
+    </div>
+
+    <div class="catch-card">
+      <div class="catch-thumb">🐡</div>
+      <div class="catch-info">
+        <div class="catch-species">Truite mouchetée</div>
+        <div class="catch-meta">Rivière Pikauba · sam. · Mouche sèche</div>
+      </div>
+      <div class="catch-size">1.8 lb</div>
+    </div>
+
+    <div class="catch-card">
+      <div class="catch-thumb">🐟</div>
+      <div class="catch-info">
+        <div class="catch-species">Ouananiche</div>
+        <div class="catch-meta">Lac Saint-Jean · ven. · Jig 1/4oz</div>
+      </div>
+      <div class="catch-size">3.4 lb</div>
+    </div>
+
+    <div style="height:20px"></div>
+  </div>
+
+  <!-- ==================== LOG CATCH SCREEN ==================== -->
+  <div class="screen" id="log-screen">
+    <div class="log-header">
+      <div class="back-btn" onclick="showScreen('home-screen')">←</div>
+      <h2>Nouvelle prise</h2>
+    </div>
+
+    <!-- Auto-captured fields -->
+    <div class="log-section">
+      <div class="log-section-title">📍 Capturé automatiquement</div>
+      <div class="auto-fields">
+        <div class="auto-field auto">
+          <span class="af-icon">📍</span>
+          <span class="af-value">48.5634, -71.8821</span>
+        </div>
+        <div class="auto-field auto">
+          <span class="af-icon">🏔</span>
+          <span class="af-value">Lac Saint-Jean</span>
+        </div>
+        <div class="auto-field auto">
+          <span class="af-icon">🌡</span>
+          <span class="af-value">22°C</span>
+        </div>
+        <div class="auto-field auto">
+          <span class="af-icon">🕐</span>
+          <span class="af-value">14:32</span>
+        </div>
+        <div class="auto-field auto">
+          <span class="af-icon">📅</span>
+          <span class="af-value">8 fév 2026</span>
+        </div>
+        <div class="auto-field auto">
+          <span class="af-icon">🚤</span>
+          <span class="af-value">8.2 km/h</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Species -->
+    <div class="log-section">
+      <div class="log-section-title">🐟 Espèce</div>
+      <div class="chip-group" id="speciesChips">
+        <div class="chip selected" onclick="selectChip(this, 'speciesChips')">Doré jaune</div>
+        <div class="chip" onclick="selectChip(this, 'speciesChips')">Brochet</div>
+        <div class="chip" onclick="selectChip(this, 'speciesChips')">Truite</div>
+        <div class="chip" onclick="selectChip(this, 'speciesChips')">Ouananiche</div>
+        <div class="chip" onclick="selectChip(this, 'speciesChips')">Achigan</div>
+        <div class="chip" onclick="selectChip(this, 'speciesChips')">Autre…</div>
+      </div>
+    </div>
+
+    <!-- Lure -->
+    <div class="log-section">
+      <div class="log-section-title">🪝 Leurre</div>
+      <div class="chip-group" id="lureChips">
+        <div class="chip selected" onclick="selectChip(this, 'lureChips')">Rapala X-Rap</div>
+        <div class="chip" onclick="selectChip(this, 'lureChips')">Cuillère Mepps</div>
+        <div class="chip" onclick="selectChip(this, 'lureChips')">Jig 1/4oz</div>
+        <div class="chip" onclick="selectChip(this, 'lureChips')">Mouche</div>
+        <div class="chip" onclick="selectChip(this, 'lureChips')">Ver</div>
+        <div class="chip" onclick="selectChip(this, 'lureChips')">+ Ajouter</div>
+      </div>
+    </div>
+
+    <!-- Depth -->
+    <div class="log-section">
+      <div class="log-section-title">📏 Profondeur</div>
+      <div class="auto-fields" style="margin-bottom:10px">
+        <div class="auto-field auto">
+          <span class="af-icon">📡</span>
+          <span class="af-label">Sonar:</span>
+          <span class="af-value">4.2m</span>
+        </div>
+      </div>
+      <div class="log-input-group">
+        <input class="log-input" type="text" placeholder="Corriger manuellement (ex: 5.5m)" />
+      </div>
+    </div>
+
+    <!-- Size -->
+    <div class="log-section">
+      <div class="log-section-title">📐 Grosseur</div>
+      <div class="size-toggle" id="sizeToggle">
+        <button class="size-toggle-btn active" onclick="setSizeMode(this, 'approx')">P / M / G</button>
+        <button class="size-toggle-btn" onclick="setSizeMode(this, 'weight')">Poids (lb)</button>
+        <button class="size-toggle-btn" onclick="setSizeMode(this, 'length')">Longueur (po)</button>
+      </div>
+      
+      <div id="sizeApprox">
+        <div class="chip-group" id="sizeChips">
+          <div class="chip" onclick="selectChip(this, 'sizeChips')">🐟 Petit</div>
+          <div class="chip selected" onclick="selectChip(this, 'sizeChips')">🐠 Moyen</div>
+          <div class="chip" onclick="selectChip(this, 'sizeChips')">🐋 Gros</div>
+          <div class="chip" onclick="selectChip(this, 'sizeChips')">🏆 Trophée</div>
+        </div>
+      </div>
+      <div id="sizeWeight" style="display:none">
+        <input class="log-input" type="number" placeholder="Poids en livres (ex: 4.2)" step="0.1" />
+      </div>
+      <div id="sizeLength" style="display:none">
+        <input class="log-input" type="number" placeholder="Longueur en pouces (ex: 18.5)" step="0.5" />
+      </div>
+    </div>
+
+    <!-- Photo -->
+    <div class="log-section">
+      <div class="log-section-title">📸 Photos / Vidéos</div>
+      <div class="photo-upload">
+        <div class="photo-slot">
+          <span class="ps-icon">📷</span>
+          <span class="ps-text">Photo</span>
+        </div>
+        <div class="photo-slot">
+          <span class="ps-icon">🎥</span>
+          <span class="ps-text">Vidéo</span>
+        </div>
+        <div class="photo-slot">
+          <span class="ps-icon">➕</span>
+          <span class="ps-text">Ajouter</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Map selection -->
+    <div class="log-section">
+      <div class="log-section-title">🗺 Ajouter à quelle carte</div>
+      <div class="map-selector">
+        <div class="map-option selected" onclick="selectMap(this)">
+          <div class="mo-radio"></div>
+          <div class="mo-info">
+            <div class="mo-name">📌 Ma carte personnelle</div>
+            <div class="mo-desc">Visible uniquement par vous</div>
+          </div>
+        </div>
+        <div class="map-option" onclick="selectMap(this)">
+          <div class="mo-radio"></div>
+          <div class="mo-info">
+            <div class="mo-name">👥 Groupe: Les pêcheurs du Lac</div>
+            <div class="mo-desc">Partagée avec 5 amis</div>
+          </div>
+        </div>
+        <div class="map-option" onclick="selectMap(this)">
+          <div class="mo-radio"></div>
+          <div class="mo-info">
+            <div class="mo-name">🌍 Carte publique Saguenay</div>
+            <div class="mo-desc">Visible par la communauté</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notes -->
+    <div class="log-section">
+      <div class="log-section-title">📝 Notes additionnelles</div>
+      <textarea class="log-input" style="height:80px;resize:none" placeholder="Ex: vent léger du nord, eau claire, fond de sable..."></textarea>
+    </div>
+
+    <div style="height:80px"></div>
+
+    <button class="save-btn" onclick="saveCatch()">✓ Enregistrer la prise</button>
+  </div>
+
+  <!-- ==================== MAP SCREEN ==================== -->
+  <div class="screen" id="map-screen">
+    <div class="map-container">
+      <div class="map-placeholder">
+        <div class="map-lake l1"></div>
+        <div class="map-lake l2"></div>
+        <div class="map-lake l3"></div>
+        
+        <div class="map-pin fish p1" title="Doré jaune">🐟</div>
+        <div class="map-pin fish p2" title="Truite">🐠</div>
+        <div class="map-pin hot p3" title="Brochet">🔥</div>
+        <div class="map-pin fish p4" title="Doré">🐟</div>
+        <div class="map-pin fish p5" title="Ouananiche">🐡</div>
+        
+        <div class="map-search">
+          <span>🔍</span>
+          <input type="text" placeholder="Rechercher un lac…" />
+        </div>
+        
+        <div class="bathy-legend">
+          <div class="bathy-legend-title">Bathymétrie</div>
+          <div class="bathy-colors">
+            <div class="bathy-swatch" style="background:#88DDFF"></div>
+            <div class="bathy-swatch" style="background:#44AADD"></div>
+            <div class="bathy-swatch" style="background:#2277AA"></div>
+            <div class="bathy-swatch" style="background:#115588"></div>
+            <div class="bathy-swatch" style="background:#0A3355"></div>
+          </div>
+          <div class="bathy-labels">
+            <span>0m</span>
+            <span>5m</span>
+            <span>10m</span>
+            <span>20m</span>
+            <span>30m+</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="map-lake-cards fade-child">
+      <div class="section-header" style="padding:0;margin-bottom:14px">
+        <span class="section-title">Lacs à proximité</span>
+        <span class="section-link">Filtrer</span>
+      </div>
+
+      <div class="lake-card">
+        <div class="lake-card-header">
+          <span class="lake-card-name">🏔 Lac Saint-Jean</span>
+          <span class="lake-card-count">32 prises</span>
+        </div>
+        <div class="lake-card-tags">
+          <span class="lake-tag">Doré</span>
+          <span class="lake-tag">Ouananiche</span>
+          <span class="lake-tag">Brochet</span>
+          <span class="lake-tag">Bathymétrie ✓</span>
+        </div>
+      </div>
+
+      <div class="lake-card">
+        <div class="lake-card-header">
+          <span class="lake-card-name">🏔 Lac Kénogami</span>
+          <span class="lake-card-count">11 prises</span>
+        </div>
+        <div class="lake-card-tags">
+          <span class="lake-tag">Brochet</span>
+          <span class="lake-tag">Truite</span>
+          <span class="lake-tag">Bathymétrie ✓</span>
+        </div>
+      </div>
+
+      <div class="lake-card">
+        <div class="lake-card-header">
+          <span class="lake-card-name">🌊 Rivière Pikauba</span>
+          <span class="lake-card-count">4 prises</span>
+        </div>
+        <div class="lake-card-tags">
+          <span class="lake-tag">Truite mouchetée</span>
+          <span class="lake-tag">Mouche</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== STATS SCREEN ==================== -->
+  <div class="screen" id="stats-screen">
+    <div class="stats-header">
+      <h2>Statistiques</h2>
+    </div>
+
+    <div class="filter-bar">
+      <div class="filter-chip active">Tout</div>
+      <div class="filter-chip">7 jours</div>
+      <div class="filter-chip">30 jours</div>
+      <div class="filter-chip">Cette année</div>
+      <div class="filter-chip">Par lac</div>
+      <div class="filter-chip">Par leurre</div>
+      <div class="filter-chip">Par espèce</div>
+    </div>
+
+    <div class="chart-container">
+      <div class="chart-title">Prises par mois (2025-2026)</div>
+      <div class="bar-chart" id="barChart">
+        <!-- Filled by JS -->
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <div class="chart-title">Meilleurs leurres</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:13px;width:100px;color:var(--text-secondary)">Rapala X-Rap</span>
+          <div style="flex:1;height:20px;background:var(--bg-surface);border-radius:4px;overflow:hidden">
+            <div style="width:72%;height:100%;background:var(--accent);border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:11px;font-weight:600;color:var(--bg-deep)">18</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:13px;width:100px;color:var(--text-secondary)">Cuillère Mepps</span>
+          <div style="flex:1;height:20px;background:var(--bg-surface);border-radius:4px;overflow:hidden">
+            <div style="width:52%;height:100%;background:var(--accent-blue);border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:11px;font-weight:600;color:var(--bg-deep)">13</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:13px;width:100px;color:var(--text-secondary)">Jig 1/4oz</span>
+          <div style="flex:1;height:20px;background:var(--bg-surface);border-radius:4px;overflow:hidden">
+            <div style="width:36%;height:100%;background:var(--accent-warm);border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:11px;font-weight:600;color:var(--bg-deep)">9</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:13px;width:100px;color:var(--text-secondary)">Mouche sèche</span>
+          <div style="flex:1;height:20px;background:var(--bg-surface);border-radius:4px;overflow:hidden">
+            <div style="width:28%;height:100%;background:#B88CFF;border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:11px;font-weight:600;color:var(--bg-deep)">7</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <span class="section-title">Par espèce</span>
+    </div>
+    
+    <div class="species-list">
+      <div class="species-row">
+        <div class="species-icon" style="background:rgba(0,212,170,0.12)">🐟</div>
+        <div class="species-info">
+          <div class="species-name">Doré jaune</div>
+          <div class="species-bar-container">
+            <div class="species-bar-fill" style="width:72%;background:var(--accent)"></div>
+          </div>
+        </div>
+        <div class="species-count">19</div>
+      </div>
+      <div class="species-row">
+        <div class="species-icon" style="background:rgba(255,140,66,0.12)">🐊</div>
+        <div class="species-info">
+          <div class="species-name">Brochet</div>
+          <div class="species-bar-container">
+            <div class="species-bar-fill" style="width:52%;background:var(--accent-warm)"></div>
+          </div>
+        </div>
+        <div class="species-count">13</div>
+      </div>
+      <div class="species-row">
+        <div class="species-icon" style="background:rgba(77,166,255,0.12)">🐠</div>
+        <div class="species-info">
+          <div class="species-name">Truite mouchetée</div>
+          <div class="species-bar-container">
+            <div class="species-bar-fill" style="width:36%;background:var(--accent-blue)"></div>
+          </div>
+        </div>
+        <div class="species-count">9</div>
+      </div>
+      <div class="species-row">
+        <div class="species-icon" style="background:rgba(184,140,255,0.12)">🐡</div>
+        <div class="species-info">
+          <div class="species-name">Ouananiche</div>
+          <div class="species-bar-container">
+            <div class="species-bar-fill" style="width:24%;background:#B88CFF"></div>
+          </div>
+        </div>
+        <div class="species-count">6</div>
+      </div>
+    </div>
+
+    <div style="height:20px"></div>
+  </div>
+
+  <!-- ==================== SHARE SCREEN ==================== -->
+  <div class="screen" id="share-screen">
+    <div class="share-header fade-child">
+      <h2>Partage</h2>
+      <p>Partagez vos spots et découvrez ceux des autres</p>
+    </div>
+
+    <div class="share-card" style="border-color:rgba(0,212,170,0.3)">
+      <div class="share-card-icon" style="background:rgba(0,212,170,0.12)">🗺</div>
+      <h3>Partager par lac</h3>
+      <p>Partagez toutes vos données d'un lac spécifique avec un ami ou un groupe.</p>
+    </div>
+
+    <div class="share-card">
+      <div class="share-card-icon" style="background:rgba(77,166,255,0.12)">🌐</div>
+      <h3>Partager par région</h3>
+      <p>Partagez vos données du Saguenay-Lac-Saint-Jean, Laurentides, etc.</p>
+    </div>
+
+    <div class="share-card">
+      <div class="share-card-icon" style="background:rgba(255,140,66,0.12)">📤</div>
+      <h3>Tout partager</h3>
+      <p>Exportez toutes vos données et cartes pour les partager avec quelqu'un.</p>
+    </div>
+
+    <div class="shared-with-me">
+      <div class="section-header" style="padding:0;margin-bottom:10px">
+        <span class="section-title">Partagé avec moi</span>
+      </div>
+
+      <div class="shared-item">
+        <div class="shared-avatar">JD</div>
+        <div class="shared-info">
+          <div class="shared-name">Jean-Daniel P.</div>
+          <div class="shared-desc">Lac Kénogami — 23 prises</div>
+        </div>
+        <div class="shared-badge">Voir</div>
+      </div>
+
+      <div class="shared-item">
+        <div class="shared-avatar">SL</div>
+        <div class="shared-info">
+          <div class="shared-name">Simon L.</div>
+          <div class="shared-desc">Région Charlevoix — 45 prises</div>
+        </div>
+        <div class="shared-badge">Voir</div>
+      </div>
+
+      <div class="shared-item">
+        <div class="shared-avatar">MP</div>
+        <div class="shared-info">
+          <div class="shared-name">Marie-Pier T.</div>
+          <div class="shared-desc">Rivière Jacques-Cartier — 8 prises</div>
+        </div>
+        <div class="shared-badge">Voir</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SETTINGS SCREEN ==================== -->
+  <div class="screen" id="settings-screen">
+    <div class="settings-header">
+      <h2>Réglages</h2>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">Préconfiguration rapide</div>
+      
+      <div class="settings-item" onclick="showPreconfig()">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🐟</div>
+          <span class="settings-item-label">Espèces favorites</span>
+        </div>
+        <span class="settings-item-value">Doré, Brochet, Truite →</span>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🪝</div>
+          <span class="settings-item-label">Leurres favoris</span>
+        </div>
+        <span class="settings-item-value">5 leurres →</span>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🏔</div>
+          <span class="settings-item-label">Lacs fréquentés</span>
+        </div>
+        <span class="settings-item-value">3 lacs →</span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">Connexions</div>
+      
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">📡</div>
+          <span class="settings-item-label">Sonar Bluetooth</span>
+        </div>
+        <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🗺</div>
+          <span class="settings-item-label">Cartes hors-ligne</span>
+        </div>
+        <span class="settings-item-value">3 téléchargées →</span>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🌡</div>
+          <span class="settings-item-label">Météo auto</span>
+        </div>
+        <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">Mode hors-ligne</div>
+      
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">💾</div>
+          <span class="settings-item-label">Précharger les cartes</span>
+        </div>
+        <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+      </div>
+
+      <div class="settings-item" onclick="toggleOffline()">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">📴</div>
+          <span class="settings-item-label">Simuler mode hors-ligne</span>
+        </div>
+        <div class="toggle" id="offlineToggle" onclick="event.stopPropagation(); toggleOffline()"></div>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🔄</div>
+          <span class="settings-item-label">Données en attente</span>
+        </div>
+        <span class="settings-item-value">0 entrées</span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">Unités</div>
+      
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">🌡</div>
+          <span class="settings-item-label">Température</span>
+        </div>
+        <span class="settings-item-value">°C</span>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">⚖️</div>
+          <span class="settings-item-label">Poids</span>
+        </div>
+        <span class="settings-item-value">Livres (lb)</span>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">📏</div>
+          <span class="settings-item-label">Longueur</span>
+        </div>
+        <span class="settings-item-value">Pouces (po)</span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">Compte</div>
+      
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">👤</div>
+          <span class="settings-item-label">Marc-Antoine D.</span>
+        </div>
+        <span class="settings-item-value">Google →</span>
+      </div>
+
+      <div class="settings-item" onclick="showScreen('login-screen')">
+        <div class="settings-item-left">
+          <div class="settings-item-icon" style="color:var(--danger)">🚪</div>
+          <span class="settings-item-label" style="color:var(--danger)">Déconnexion</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="height:20px"></div>
+  </div>
+
+  <!-- ==================== PRECONFIG MODAL ==================== -->
+  <div class="modal-overlay" id="preconfigModal">
+    <div class="modal-sheet">
+      <div class="modal-handle"></div>
+      <div class="modal-title">Espèces favorites</div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">
+        Sélectionnez vos espèces fréquentes — elles apparaîtront en premier lors de la saisie.
+      </p>
+      <div class="chip-group" id="preconfigChips">
+        <div class="chip selected" onclick="this.classList.toggle('selected')">Doré jaune</div>
+        <div class="chip selected" onclick="this.classList.toggle('selected')">Brochet</div>
+        <div class="chip selected" onclick="this.classList.toggle('selected')">Truite mouchetée</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Ouananiche</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Achigan</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Perchaude</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Touladi</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Barbotte</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Maskinongé</div>
+        <div class="chip" onclick="this.classList.toggle('selected')">Corégone</div>
+      </div>
+      <button class="save-btn" style="position:relative;bottom:auto;left:auto;transform:none;width:100%;margin-top:20px" onclick="closePreconfigModal()">
+        ✓ Enregistrer
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== TAB BAR ==================== -->
+  <div class="tab-bar" id="tabBar">
+    <div class="tab-item active" onclick="showScreen('home-screen'); activateTab(0)">
+      <span class="tab-icon">🏠</span>
+      <span class="tab-label">Accueil</span>
+    </div>
+    <div class="tab-item" onclick="showScreen('map-screen'); activateTab(1)">
+      <span class="tab-icon">🗺</span>
+      <span class="tab-label">Carte</span>
+    </div>
+    <div class="tab-item" onclick="showScreen('stats-screen'); activateTab(2)">
+      <span class="tab-icon">📊</span>
+      <span class="tab-label">Stats</span>
+    </div>
+    <div class="tab-item" onclick="showScreen('share-screen'); activateTab(3)">
+      <span class="tab-icon">🤝</span>
+      <span class="tab-label">Partage</span>
+    </div>
+    <div class="tab-item" onclick="showScreen('settings-screen'); activateTab(4)">
+      <span class="tab-icon">⚙️</span>
+      <span class="tab-label">Réglages</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ NAVIGATION ============
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => {
+    s.classList.remove('active','slide-in');
+  });
+  const screen = document.getElementById(id);
+  screen.classList.add('active','slide-in');
+  
+  // Show/hide tab bar
+  const tabBar = document.getElementById('tabBar');
+  if (id === 'login-screen' || id === 'log-screen') {
+    tabBar.style.display = 'none';
+  } else {
+    tabBar.style.display = 'flex';
+  }
+}
+
+function activateTab(index) {
+  document.querySelectorAll('.tab-item').forEach((t,i) => {
+    t.classList.toggle('active', i === index);
+  });
+}
+
+// ============ LOGIN ============
+function login() {
+  showScreen('home-screen');
+  activateTab(0);
+}
+
+// ============ CHIP SELECTION ============
+function selectChip(chip, groupId) {
+  const group = document.getElementById(groupId);
+  group.querySelectorAll('.chip').forEach(c => c.classList.remove('selected'));
+  chip.classList.add('selected');
+}
+
+// ============ SIZE MODE ============
+function setSizeMode(btn, mode) {
+  document.querySelectorAll('#sizeToggle .size-toggle-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  
+  document.getElementById('sizeApprox').style.display = mode === 'approx' ? 'block' : 'none';
+  document.getElementById('sizeWeight').style.display = mode === 'weight' ? 'block' : 'none';
+  document.getElementById('sizeLength').style.display = mode === 'length' ? 'block' : 'none';
+}
+
+// ============ MAP SELECTION ============
+function selectMap(option) {
+  document.querySelectorAll('.map-option').forEach(o => o.classList.remove('selected'));
+  option.classList.add('selected');
+}
+
+// ============ SAVE CATCH ============
+function saveCatch() {
+  const toast = document.getElementById('toast');
+  toast.textContent = '✓ Prise enregistrée avec succès !';
+  toast.style.display = 'block';
+  setTimeout(() => {
+    toast.style.display = 'none';
+    showScreen('home-screen');
+    activateTab(0);
+  }, 1500);
+}
+
+// ============ OFFLINE MODE ============
+function toggleOffline() {
+  const toggle = document.getElementById('offlineToggle');
+  const bar = document.getElementById('offlineBar');
+  toggle.classList.toggle('on');
+  bar.classList.toggle('show');
+}
+
+// ============ PRECONFIG MODAL ============
+function showPreconfig() {
+  document.getElementById('preconfigModal').classList.add('show');
+}
+
+function closePreconfigModal() {
+  document.getElementById('preconfigModal').classList.remove('show');
+  showToast('Espèces favorites mises à jour !');
+}
+
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  setTimeout(() => toast.style.display = 'none', 2000);
+}
+
+// Close modal on overlay click
+document.getElementById('preconfigModal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('show');
+});
+
+// ============ BAR CHART ============
+const monthData = [
+  {label:'Mai',value:8},{label:'Jun',value:14},{label:'Jul',value:12},
+  {label:'Aoû',value:16},{label:'Sep',value:9},{label:'Oct',value:5},
+  {label:'Nov',value:2},{label:'Déc',value:1},{label:'Jan',value:3},
+  {label:'Fév',value:4}
+];
+
+const chart = document.getElementById('barChart');
+const maxVal = Math.max(...monthData.map(d=>d.value));
+
+monthData.forEach(d => {
+  const col = document.createElement('div');
+  col.className = 'bar-col';
+  
+  const val = document.createElement('div');
+  val.className = 'bar-value';
+  val.textContent = d.value;
+  
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+  const pct = (d.value / maxVal) * 100;
+  bar.style.height = pct + '%';
+  
+  const hue = pct > 70 ? 'var(--accent)' : pct > 40 ? 'var(--accent-blue)' : 'var(--bg-elevated)';
+  bar.style.background = hue;
+  
+  const label = document.createElement('div');
+  label.className = 'bar-label';
+  label.textContent = d.label;
+  
+  col.appendChild(val);
+  col.appendChild(bar);
+  col.appendChild(label);
+  chart.appendChild(col);
+});
+
+// ============ FILTER CHIPS ============
+document.querySelectorAll('.filter-chip').forEach(chip => {
+  chip.addEventListener('click', function() {
+    document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+
+// Init: hide tab bar on login
+document.getElementById('tabBar').style.display = 'none';
+</script>
+</body>
+</html>
