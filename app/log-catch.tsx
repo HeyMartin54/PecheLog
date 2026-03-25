@@ -3,13 +3,16 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
+  Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import LocationPickerMap from '@/components/LocationPickerMap';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
@@ -227,7 +230,12 @@ export default function LogCatchScreen() {
 
   const [saving, setSaving] = useState(false);
 
-  const hasLocation = !!coords;
+  const [manualLocation, setManualLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [pickerCoord, setPickerCoord] = useState<{ latitude: number; longitude: number } | null>(null);
+
+  const effectiveCoords = manualLocation ?? (coords ? { latitude: coords.coords.latitude, longitude: coords.coords.longitude } : null);
+  const hasLocation = !!effectiveCoords;
 
   useEffect(() => {
     // Au montage, on tente de :
@@ -344,6 +352,36 @@ export default function LogCatchScreen() {
     return `${speedKmh.toFixed(1)} km/h`;
   }, [speedKmh]);
 
+  const handleOpenLocationPicker = () => {
+    const initial = effectiveCoords;
+    if (!initial) return;
+    setPickerCoord({ latitude: initial.latitude, longitude: initial.longitude });
+    setShowLocationPicker(true);
+  };
+
+  const handleConfirmLocation = async () => {
+    if (!pickerCoord) return;
+    setShowLocationPicker(false);
+    setManualLocation(pickerCoord);
+    setLakeName(null);
+    const [lake, weather] = await Promise.all([
+      reverseGeocodeLakeName(pickerCoord.latitude, pickerCoord.longitude),
+      fetchWeatherFromOpenWeather(pickerCoord.latitude, pickerCoord.longitude),
+    ]);
+    setLakeName(lake);
+    if (weather) {
+      setTemperatureC(weather.tempC);
+      setWindSpeedKmh(weather.windKmh);
+    }
+  };
+
+  const handleResetLocation = () => {
+    setManualLocation(null);
+    if (coords) {
+      setPickerCoord({ latitude: coords.coords.latitude, longitude: coords.coords.longitude });
+    }
+  };
+
   const handlePickMedia = async (type: 'photo' | 'video') => {
     try {
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -384,7 +422,7 @@ export default function LogCatchScreen() {
       return;
     }
 
-    if (!coords) {
+    if (!effectiveCoords) {
       Alert.alert(
         'Localisation',
         "Impossible de récupérer ta position. Vérifie que le GPS est activé et réessaie.",
@@ -407,8 +445,8 @@ export default function LogCatchScreen() {
       map_id: null, // TODO: brancher sur la carte sélectionnée (personnelle / partagée)
       species: selectedSpecies,
       lure: selectedLure,
-      latitude: coords.coords.latitude,
-      longitude: coords.coords.longitude,
+      latitude: effectiveCoords.latitude,
+      longitude: effectiveCoords.longitude,
       lake_name: lakeName,
       depth_meters: depthValue,
       depth_source: depthValue != null ? 'manual' : sonarDepthMeters != null ? 'sonar' : null,
@@ -495,7 +533,12 @@ export default function LogCatchScreen() {
           )}
 
           <View style={styles.autoFieldsRow}>
-            <AutoFieldBadge icon="📍" value={hasLocation ? `${coords?.coords.latitude.toFixed(4)}, ${coords?.coords.longitude.toFixed(4)}` : 'GPS…'} />
+            <AutoFieldBadge
+              icon="📍"
+              value={hasLocation ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}` : 'GPS…'}
+              onPress={hasLocation ? handleOpenLocationPicker : undefined}
+              modified={!!manualLocation}
+            />
             <AutoFieldBadge icon="🏔" value={lakeName ?? 'Lac inconnu'} />
             <AutoFieldBadge
               icon="🌡"
@@ -699,6 +742,48 @@ export default function LogCatchScreen() {
           <AutoFieldText style={styles.saveButtonText}>✓ Enregistrer la prise</AutoFieldText>
         )}
       </TouchableOpacity>
+
+      <Modal visible={showLocationPicker} animationType="slide" statusBarTranslucent>
+        <View style={styles.pickerContainer}>
+          <View style={styles.pickerHeader}>
+            <TouchableOpacity onPress={() => setShowLocationPicker(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.pickerCancel}>Annuler</Text>
+            </TouchableOpacity>
+            <Text style={styles.pickerTitle}>Modifier l'emplacement</Text>
+            <TouchableOpacity onPress={handleConfirmLocation} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.pickerConfirm}>Confirmer</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.pickerHint}>Appuyez sur la carte ou faites glisser le marqueur</Text>
+
+          {pickerCoord && (
+            <LocationPickerMap
+              coordinate={pickerCoord}
+              onCoordinateChange={setPickerCoord}
+            />
+          )}
+
+          <View style={styles.pickerFooter}>
+            <Text style={styles.pickerCoordsText}>
+              {pickerCoord
+                ? `${pickerCoord.latitude.toFixed(5)}, ${pickerCoord.longitude.toFixed(5)}`
+                : ''}
+            </Text>
+            {manualLocation && (
+              <TouchableOpacity
+                onPress={() => {
+                  handleResetLocation();
+                  setShowLocationPicker(false);
+                }}
+                style={styles.pickerResetBtn}
+              >
+                <Text style={styles.pickerResetText}>Réinitialiser au GPS</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -824,15 +909,27 @@ function ActivityIndicatorText({
 type AutoFieldBadgeProps = {
   icon: string;
   value: string;
+  onPress?: () => void;
+  modified?: boolean;
 };
 
-function AutoFieldBadge({ icon, value }: AutoFieldBadgeProps) {
-  return (
-    <View style={[styles.autoField, styles.autoFieldAuto]}>
+function AutoFieldBadge({ icon, value, onPress, modified }: AutoFieldBadgeProps) {
+  const inner = (
+    <View style={[styles.autoField, styles.autoFieldAuto, modified && styles.autoFieldModified]}>
       <AutoFieldText style={styles.autoFieldIcon}>{icon}</AutoFieldText>
       <AutoFieldText style={styles.autoFieldValue}>{value}</AutoFieldText>
+      {onPress && <Text style={styles.autoFieldEditIcon}>✏️</Text>}
     </View>
   );
+
+  if (onPress) {
+    return (
+      <TouchableOpacity onPress={onPress} activeOpacity={0.75}>
+        {inner}
+      </TouchableOpacity>
+    );
+  }
+  return inner;
 }
 
 const styles = StyleSheet.create({
@@ -1088,5 +1185,76 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#0B1A2B',
   },
+
+  // Auto-field badge: modified state
+  autoFieldModified: {
+    borderColor: '#FFB347',
+  },
+  autoFieldEditIcon: {
+    fontSize: 11,
+    marginLeft: 4,
+  },
+
+  // Location picker modal
+  pickerContainer: {
+    flex: 1,
+    backgroundColor: BG_COLOR,
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingTop: Platform.OS === 'ios' ? 56 : 28,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER_COLOR,
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+  },
+  pickerCancel: {
+    fontSize: 15,
+    color: TEXT_MUTED,
+  },
+  pickerConfirm: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: ACCENT_COLOR,
+  },
+  pickerHint: {
+    textAlign: 'center',
+    fontSize: 12,
+    color: TEXT_MUTED,
+    paddingVertical: 8,
+  },
+  pickerMap: { flex: 1 },
+  pickerFooter: {
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: BORDER_COLOR,
+    gap: 10,
+  },
+  pickerCoordsText: {
+    fontSize: 13,
+    color: TEXT_MUTED,
+    textAlign: 'center',
+  },
+  pickerResetBtn: {
+    alignSelf: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#FFB347',
+  },
+  pickerResetText: {
+    fontSize: 13,
+    color: '#FFB347',
+  },
+
 });
 

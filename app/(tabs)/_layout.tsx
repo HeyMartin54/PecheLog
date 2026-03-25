@@ -44,9 +44,20 @@ export default function TabLayout() {
       />
       <Tabs.Screen
         name="two"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="map"
         options={{
-          title: 'Plus',
-          tabBarIcon: ({ color }) => <TabBarIcon name="ellipsis-h" color={color} />,
+          title: 'Carte',
+          tabBarIcon: ({ color }) => <TabBarIcon name="map" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="stats"
+        options={{
+          title: 'Statistiques',
+          tabBarIcon: ({ color }) => <TabBarIcon name="bar-chart" color={color} />,
         }}
       />
     </Tabs>
