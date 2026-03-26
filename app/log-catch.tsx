@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import LocationPickerMap from '@/components/LocationPickerMap';
+import StaticMapView from '@/components/StaticMapView';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
@@ -42,12 +43,14 @@ type CatchPayload = {
   depth_source: 'manual' | 'sonar' | 'bathymetric' | null;
   temperature_c: number | null;
   wind_speed_kmh: number | null;
+  wind_direction_deg: number | null;
   speed_kmh: number | null;
   weather_conditions: string | null;
   size_category: SizeCategory | null;
   weight_lbs: number | null;
   length_inches: number | null;
   notes: string | null;
+  caught_at: string;
   local_id: string | null;
 };
 
@@ -72,7 +75,7 @@ async function enqueueOfflineCatch(item: OfflineQueuedCatch) {
     parsed.push(item);
     await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(parsed));
   } catch (error) {
-    console.warn('[Offline] Impossible d’enregistrer la prise hors-ligne', error);
+    console.warn(`[Offline] Impossible d'enregistrer la prise hors-ligne`, error);
   }
 }
 
@@ -91,8 +94,8 @@ async function trySyncOfflineCatches(userId: string) {
 
     const remaining: OfflineQueuedCatch[] = [];
 
-    // On tente de pousser chaque entrée; en cas d’erreur réseau, on garde dans la file.
-    // Note : pour l’instant on ne gère pas encore l’upload des médias vers Supabase Storage.
+    // On tente de pousser chaque entrée; en cas d'erreur réseau, on garde dans la file.
+    // Note : pour l'instant on ne gère pas encore l'upload des médias vers Supabase Storage.
     for (const item of queue) {
       try {
         if (item.payload.user_id !== userId) {
@@ -100,9 +103,30 @@ async function trySyncOfflineCatches(userId: string) {
           continue;
         }
 
+        let payload = item.payload;
+
+        // Si les données météo manquent (capture hors-ligne), tenter de les récupérer maintenant
+        const weatherMissing =
+          payload.weather_conditions == null &&
+          payload.wind_speed_kmh == null &&
+          payload.temperature_c == null;
+
+        if (weatherMissing) {
+          const weather = await fetchWeatherAtTime(payload.latitude, payload.longitude, payload.caught_at);
+          if (weather) {
+            payload = {
+              ...payload,
+              temperature_c: weather.tempC,
+              wind_speed_kmh: weather.windKmh,
+              wind_direction_deg: weather.windDeg,
+              weather_conditions: weather.conditions,
+            };
+          }
+        }
+
         const { error } = await supabase
           .from('catches')
-          .insert(buildCatchInsertPayload(item.payload));
+          .insert(buildCatchInsertPayload(payload));
         if (error) {
           console.warn('[Offline] Erreur lors de la sync catch hors-ligne', error);
           remaining.push(item);
@@ -123,36 +147,222 @@ async function trySyncOfflineCatches(userId: string) {
   }
 }
 
+function wmoCodeToCondition(code: number): { label: string; icon: string } {
+  if (code === 0) return { label: 'Ensoleillé', icon: '☀️' };
+  if (code === 1) return { label: 'Peu nuageux', icon: '🌤' };
+  if (code === 2) return { label: 'Partiellement nuageux', icon: '⛅' };
+  if (code === 3) return { label: 'Nuageux', icon: '☁️' };
+  if (code === 45 || code === 48) return { label: 'Brume', icon: '🌫' };
+  if (code >= 51 && code <= 55) return { label: 'Bruine', icon: '🌦' };
+  if (code >= 61 && code <= 65) return { label: 'Pluie', icon: '🌧' };
+  if (code >= 71 && code <= 75) return { label: 'Neige', icon: '🌨' };
+  if (code >= 80 && code <= 82) return { label: 'Averses', icon: '🌧' };
+  if (code >= 95) return { label: 'Orage', icon: '⛈' };
+  return { label: '—', icon: '🌡' };
+}
+
+// Récupère la météo historique pour une date/heure précise via Open-Meteo (gratuit, sans clé API).
+// Utilise l'API forecast avec past_days pour les 16 derniers jours, l'archive au-delà.
+async function fetchWeatherAtTime(
+  latitude: number,
+  longitude: number,
+  isoDateTime: string,
+): Promise<WeatherData | null> {
+  try {
+    const catchDate = new Date(isoDateTime);
+    const dateStr = catchDate.toISOString().split('T')[0];
+    const daysDiff = Math.floor((Date.now() - catchDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    const params = 'hourly=temperature_2m,windspeed_10m,winddirection_10m,weathercode&windspeed_unit=kmh&timezone=auto';
+    const coords = `latitude=${latitude}&longitude=${longitude}`;
+
+    const url =
+      daysDiff <= 16
+        ? `https://api.open-meteo.com/v1/forecast?${coords}&past_days=${Math.min(daysDiff + 1, 16)}&forecast_days=1&${params}`
+        : `https://archive-api.open-meteo.com/v1/archive?${coords}&start_date=${dateStr}&end_date=${dateStr}&${params}`;
+
+    const res = await fetch(url);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const times: string[] = data?.hourly?.time ?? [];
+    if (times.length === 0) return null;
+
+    // Trouver l'heure la plus proche de la prise
+    const catchTs = catchDate.getTime();
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < times.length; i++) {
+      const diff = Math.abs(new Date(times[i]).getTime() - catchTs);
+      if (diff < minDiff) { minDiff = diff; closestIdx = i; }
+    }
+
+    const tempC: number | null = data?.hourly?.temperature_2m?.[closestIdx] ?? null;
+    const windKmh: number | null = data?.hourly?.windspeed_10m?.[closestIdx] ?? null;
+    const windDeg: number | null = data?.hourly?.winddirection_10m?.[closestIdx] ?? null;
+    const wmoCode: number = data?.hourly?.weathercode?.[closestIdx] ?? -1;
+    const { label, icon } = wmoCodeToCondition(wmoCode);
+
+    return { tempC, windKmh, windDeg, conditions: label, conditionsIcon: icon };
+  } catch (error) {
+    console.warn('[Weather] Erreur fetch historique Open-Meteo', error);
+    return null;
+  }
+}
+
+const WATER_CLASSES = new Set(['water', 'waterway', 'natural']);
+const WATER_TYPES = new Set(['water', 'lake', 'reservoir', 'pond', 'bay', 'river', 'stream']);
+
+function extractLakeFromNominatim(data: any): string | null {
+  // Champs d'adresse explicitement liés à l'eau — toujours fiables
+  const fromAddress =
+    data?.address?.water ||
+    data?.address?.lake ||
+    data?.address?.reservoir ||
+    data?.address?.bay ||
+    data?.address?.river;
+  if (fromAddress) return fromAddress;
+
+  // data.name n'est utilisé que si l'objet Nominatim est lui-même un plan d'eau
+  if (
+    WATER_CLASSES.has(data?.class) ||
+    WATER_TYPES.has(data?.type)
+  ) {
+    return data?.name ?? null;
+  }
+  return null;
+}
+
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+
+// Résout dès qu'une des promesses retourne une valeur non-null.
+// Évite d'attendre le plus lent quand le plus rapide a déjà répondu.
+function raceNonNull<T>(promises: Promise<T | null>[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let remaining = promises.length;
+    if (remaining === 0) { resolve(null); return; }
+    for (const p of promises) {
+      p.then((val) => {
+        if (val != null) resolve(val);
+        else if (--remaining === 0) resolve(null);
+      }).catch(() => {
+        if (--remaining === 0) resolve(null);
+      });
+    }
+  });
+}
+
+// Requête bbox petite (~5 km) : rapide et précise pour petits ET grands lacs.
+async function findLakeOverpassBbox(latitude: number, longitude: number): Promise<string | null> {
+  const d = 0.05; // ~5 km de chaque côté
+  const bbox = `${latitude - d},${longitude - d},${latitude + d},${longitude + d}`;
+  const q =
+    `[out:json][timeout:10];` +
+    `(way["natural"="water"]["name"](${bbox});` +
+    `relation["natural"="water"]["name"](${bbox});` +
+    `way["water"="lake"]["name"](${bbox});` +
+    `relation["water"="lake"]["name"](${bbox}););` +
+    `out tags center 10;`;
+
+  function pickNearest(data: any): string | null {
+    const elements: any[] = data?.elements ?? [];
+    let best: { name: string; dist: number } | null = null;
+    for (const el of elements) {
+      const name: string | undefined = el?.tags?.name;
+      if (!name) continue;
+      const lat: number | undefined = el?.center?.lat ?? el?.lat;
+      const lon: number | undefined = el?.center?.lon ?? el?.lon;
+      const dist = lat != null && lon != null
+        ? Math.sqrt((lat - latitude) ** 2 + (lon - longitude) ** 2)
+        : Infinity;
+      if (!best || dist < best.dist) best = { name, dist };
+    }
+    return best?.name ?? null;
+  }
+
+  // Prendre le premier endpoint qui répond avec un résultat
+  return raceNonNull(
+    OVERPASS_ENDPOINTS.map((endpoint) =>
+      fetch(`${endpoint}?data=${encodeURIComponent(q)}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((data) => pickNearest(data))
+        .catch(() => null),
+    ),
+  );
+}
+
 async function reverseGeocodeLakeName(
   latitude: number,
   longitude: number,
 ): Promise<string | null> {
+  const base = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`;
+  const headers = { 'User-Agent': 'PecheLog/1.0' };
+
   try {
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&zoom=14`;
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'PecheLog/1.0',
-      },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    // On tente de trouver un champ pertinent dans l’adresse.
-    const lake =
-      data?.address?.water ||
-      data?.address?.lake ||
-      data?.address?.reservoir ||
-      data?.name;
-    return lake ?? null;
+    // Lancer Nominatim z18 et Overpass bbox en parallèle — s'arrête dès le premier résultat
+    const [data18, overpassName] = await Promise.all([
+      fetch(`${base}&zoom=18`, { headers }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      findLakeOverpassBbox(latitude, longitude),
+    ]);
+
+    // Priorité 1 : point directement sur un plan d'eau (Nominatim précis)
+    const nom18 = data18 ? extractLakeFromNominatim(data18) : null;
+    if (nom18) return nom18;
+
+    // Priorité 2 : plan d'eau dans les 5 km (Overpass bbox)
+    if (overpassName) return overpassName;
+
+    return null;
   } catch (error) {
     console.warn('[Geocoding] Erreur reverse geocoding', error);
     return null;
   }
 }
 
+type WeatherData = {
+  tempC: number | null;
+  windKmh: number | null;
+  windDeg: number | null;
+  conditions: string | null;
+  conditionsIcon: string;
+};
+
+function getWeatherConditionFr(main: string, cloudiness: number): { label: string; icon: string } {
+  switch (main) {
+    case 'Clear':
+      return { label: 'Ensoleillé', icon: '☀️' };
+    case 'Clouds':
+      if (cloudiness < 25) return { label: 'Peu nuageux', icon: '🌤' };
+      if (cloudiness < 75) return { label: 'Partiellement nuageux', icon: '⛅' };
+      return { label: 'Nuageux', icon: '☁️' };
+    case 'Rain':
+    case 'Drizzle':
+      return { label: 'Pluie', icon: '🌧' };
+    case 'Thunderstorm':
+      return { label: 'Orage', icon: '⛈' };
+    case 'Snow':
+      return { label: 'Neige', icon: '🌨' };
+    case 'Mist':
+    case 'Fog':
+    case 'Haze':
+      return { label: 'Brume', icon: '🌫' };
+    default:
+      return { label: main, icon: '🌡' };
+  }
+}
+
+function windDegToCompass(deg: number): string {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
 async function fetchWeatherFromOpenWeather(
   latitude: number,
   longitude: number,
-): Promise<{ tempC: number | null; windKmh: number | null } | null> {
+): Promise<WeatherData | null> {
   const apiKey = process.env.EXPO_PUBLIC_OPENWEATHER_API_KEY;
   if (!apiKey) {
     console.warn('[Weather] EXPO_PUBLIC_OPENWEATHER_API_KEY manquante');
@@ -171,8 +381,15 @@ async function fetchWeatherFromOpenWeather(
     const tempC = typeof data?.main?.temp === 'number' ? data.main.temp : null;
     const windMs = typeof data?.wind?.speed === 'number' ? data.wind.speed : null;
     const windKmh = windMs != null ? windMs * 3.6 : null;
+    const windDeg = typeof data?.wind?.deg === 'number' ? data.wind.deg : null;
 
-    return { tempC, windKmh };
+    const weatherMain: string = data?.weather?.[0]?.main ?? '';
+    const cloudiness: number = typeof data?.clouds?.all === 'number' ? data.clouds.all : 50;
+    const { label, icon } = weatherMain
+      ? getWeatherConditionFr(weatherMain, cloudiness)
+      : { label: null, icon: '🌡' };
+
+    return { tempC, windKmh, windDeg, conditions: label, conditionsIcon: icon };
   } catch (error) {
     console.warn('[Weather] Erreur lors du fetch météo', error);
     return null;
@@ -186,8 +403,12 @@ export default function LogCatchScreen() {
   // Auto-captured
   const [coords, setCoords] = useState<Location.LocationObject | null>(null);
   const [lakeName, setLakeName] = useState<string | null>(null);
+  const [lakeLoading, setLakeLoading] = useState(false);
   const [temperatureC, setTemperatureC] = useState<number | null>(null);
   const [windSpeedKmh, setWindSpeedKmh] = useState<number | null>(null);
+  const [windDirectionDeg, setWindDirectionDeg] = useState<number | null>(null);
+  const [weatherConditions, setWeatherConditions] = useState<string | null>(null);
+  const [weatherConditionsIcon, setWeatherConditionsIcon] = useState<string>('🌡');
   const [speedKmh, setSpeedKmh] = useState<number | null>(null);
   const [autoLoading, setAutoLoading] = useState(true);
 
@@ -195,10 +416,9 @@ export default function LogCatchScreen() {
   const [speciesOptions, setSpeciesOptions] = useState<string[]>([
     'Doré jaune',
     'Brochet',
-    'Truite',
-    'Ouananiche',
-    'Achigan',
-    'Autre…',
+    'Truite mouchetée',
+    'Touladi',
+    'Site prometteur',
   ]);
   const [lureOptions, setLureOptions] = useState<string[]>([
     'Rapala X-Rap',
@@ -267,16 +487,21 @@ export default function LogCatchScreen() {
         const speed = typeof loc.coords.speed === 'number' ? loc.coords.speed : null;
         setSpeedKmh(speed != null ? speed * 3.6 : null);
 
+        setLakeLoading(true);
         const [lake, weather] = await Promise.all([
           reverseGeocodeLakeName(loc.coords.latitude, loc.coords.longitude),
           fetchWeatherFromOpenWeather(loc.coords.latitude, loc.coords.longitude),
         ]);
 
         if (!isMounted) return;
+        setLakeLoading(false);
         setLakeName(lake);
         if (weather) {
           setTemperatureC(weather.tempC);
           setWindSpeedKmh(weather.windKmh);
+          setWindDirectionDeg(weather.windDeg);
+          setWeatherConditions(weather.conditions);
+          setWeatherConditionsIcon(weather.conditionsIcon);
         }
       } catch (error) {
         console.warn('[AutoFields] Erreur lors de la capture auto', error);
@@ -295,7 +520,7 @@ export default function LogCatchScreen() {
   }, [user?.id]);
 
   useEffect(() => {
-    // Charger les préférences de l’utilisateur pour peupler espèces / leurres
+    // Charger les préférences de l'utilisateur pour peupler espèces / leurres
     const loadPreferences = async () => {
       if (!user?.id) return;
       try {
@@ -364,14 +589,19 @@ export default function LogCatchScreen() {
     setShowLocationPicker(false);
     setManualLocation(pickerCoord);
     setLakeName(null);
+    setLakeLoading(true);
     const [lake, weather] = await Promise.all([
       reverseGeocodeLakeName(pickerCoord.latitude, pickerCoord.longitude),
       fetchWeatherFromOpenWeather(pickerCoord.latitude, pickerCoord.longitude),
     ]);
+    setLakeLoading(false);
     setLakeName(lake);
     if (weather) {
       setTemperatureC(weather.tempC);
       setWindSpeedKmh(weather.windKmh);
+      setWindDirectionDeg(weather.windDeg);
+      setWeatherConditions(weather.conditions);
+      setWeatherConditionsIcon(weather.conditionsIcon);
     }
   };
 
@@ -388,16 +618,13 @@ export default function LogCatchScreen() {
       if (!permissionResult.granted) {
         Alert.alert(
           'Permissions',
-          "Impossible d’accéder à ta galerie sans la permission de lecture.",
+          "Impossible d'accéder à ta galerie sans la permission de lecture.",
         );
         return;
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes:
-          type === 'photo'
-            ? ImagePicker.MediaTypeOptions.Images
-            : ImagePicker.MediaTypeOptions.Videos,
+        mediaTypes: type === 'photo' ? 'images' : 'videos',
         quality: 0.8,
       });
 
@@ -452,12 +679,14 @@ export default function LogCatchScreen() {
       depth_source: depthValue != null ? 'manual' : sonarDepthMeters != null ? 'sonar' : null,
       temperature_c: temperatureC,
       wind_speed_kmh: windSpeedKmh,
+      wind_direction_deg: windDirectionDeg,
       speed_kmh: speedKmh,
-      weather_conditions: null,
+      weather_conditions: weatherConditions,
       size_category: sizeCategoryValue,
       weight_lbs: sizeMode === 'weight' ? weightValue : null,
       length_inches: sizeMode === 'length' ? lengthValue : null,
       notes: notes.trim().length > 0 ? notes.trim() : null,
+      caught_at: new Date().toISOString(),
       local_id: `local_${Date.now()}`,
     };
 
@@ -468,7 +697,7 @@ export default function LogCatchScreen() {
         .insert(buildCatchInsertPayload(payload));
 
       if (error) {
-        console.warn('[LogCatch] Erreur lors de l’enregistrement en ligne, on bascule hors-ligne', error);
+        console.warn(`[LogCatch] Erreur lors de l'enregistrement en ligne, on bascule hors-ligne`, error);
         await enqueueOfflineCatch({ payload, media });
         Alert.alert(
           'Mode hors-ligne',
@@ -519,11 +748,11 @@ export default function LogCatchScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Auto-captured section */}
+        {/* Section Emplacement */}
         <View style={styles.section}>
-          <SectionTitle>📍 Capturé automatiquement</SectionTitle>
+          <SectionTitle>📍 Emplacement</SectionTitle>
 
-          {autoLoading && (
+          {autoLoading && !hasLocation && (
             <View style={styles.autoLoadingRow}>
               <ActivityIndicator size="small" color={ACCENT_COLOR} />
               <AutoFieldText style={styles.autoLoadingText}>
@@ -532,6 +761,21 @@ export default function LogCatchScreen() {
             </View>
           )}
 
+          {hasLocation && (
+            <StaticMapView
+              key={`${effectiveCoords!.latitude.toFixed(5)},${effectiveCoords!.longitude.toFixed(5)}`}
+              coordinate={effectiveCoords!}
+              height={180}
+              onPress={handleOpenLocationPicker}
+            />
+          )}
+
+          <Text style={styles.lakeNameTitle}>
+            {lakeLoading || autoLoading
+              ? '🏔  Récupération du lac…'
+              : lakeName ?? '🏔  Lac inconnu'}
+          </Text>
+
           <View style={styles.autoFieldsRow}>
             <AutoFieldBadge
               icon="📍"
@@ -539,17 +783,34 @@ export default function LogCatchScreen() {
               onPress={hasLocation ? handleOpenLocationPicker : undefined}
               modified={!!manualLocation}
             />
-            <AutoFieldBadge icon="🏔" value={lakeName ?? 'Lac inconnu'} />
+            <AutoFieldBadge icon="📅" value={formattedDate} />
+            <AutoFieldBadge icon="🕐" value={formattedTime} />
+            {speedBadgeValue && <AutoFieldBadge icon="🚤" value={speedBadgeValue} />}
+          </View>
+        </View>
+
+        {/* Section Météo */}
+        <View style={styles.section}>
+          <SectionTitle>🌤 Météo</SectionTitle>
+          <View style={styles.autoFieldsRow}>
+            <AutoFieldBadge
+              icon={weatherConditionsIcon}
+              value={weatherConditions ?? (autoLoading ? 'Météo…' : '—')}
+            />
             <AutoFieldBadge
               icon="🌡"
-              value={temperatureC != null ? `${temperatureC.toFixed(1)} °C` : 'Météo…'}
+              value={temperatureC != null ? `${temperatureC.toFixed(1)} °C` : (autoLoading ? 'Météo…' : '—')}
             />
             <AutoFieldBadge
-              icon="🕐"
-              value={formattedTime}
+              icon="💨"
+              value={
+                windSpeedKmh != null
+                  ? windDirectionDeg != null
+                    ? `${windDegToCompass(windDirectionDeg)} ${windSpeedKmh.toFixed(0)} km/h`
+                    : `${windSpeedKmh.toFixed(0)} km/h`
+                  : autoLoading ? 'Météo…' : '—'
+              }
             />
-            <AutoFieldBadge icon="📅" value={formattedDate} />
-            {speedBadgeValue && <AutoFieldBadge icon="🚤" value={speedBadgeValue} />}
           </View>
         </View>
 
@@ -889,7 +1150,7 @@ function AutoFieldText({ children, style }: AutoFieldTextProps) {
   return <ActivityIndicatorText style={style}>{children}</ActivityIndicatorText>;
 }
 
-// Petit wrapper pour avoir un composant texte unique si l’app utilise un composant Thème plus tard.
+// Petit wrapper pour avoir un composant texte unique si l'app utilise un composant Thème plus tard.
 function ActivityIndicatorText({
   children,
   style,
@@ -898,10 +1159,9 @@ function ActivityIndicatorText({
   style?: object;
 }) {
   // On utilise simplement TextInput pour garder le Text natif sans importer de Themed.Text ici.
-  // Cela permet d’éviter les conflits de thème tout en restant simple.
+  // Cela permet d'éviter les conflits de thème tout en restant simple.
   // eslint-disable-next-line react-native/no-inline-styles
   return (
-    // @ts-expect-error – on réutilise TextInput comme conteneur de texte non éditable
     <TextInput style={[{ color: TEXT_PRIMARY }, style]} editable={false} value={String(children)} />
   );
 }
@@ -1025,6 +1285,12 @@ const styles = StyleSheet.create({
   autoLoadingText: {
     fontSize: 13,
     color: TEXT_MUTED,
+  },
+  lakeNameTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: TEXT_PRIMARY,
+    marginBottom: 10,
   },
   chipRow: {
     flexDirection: 'row',

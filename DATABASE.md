@@ -90,6 +90,7 @@ CREATE TABLE catches (
   depth_source TEXT CHECK (depth_source IN ('manual', 'sonar', 'bathymetric')),
   temperature_c REAL,
   wind_speed_kmh REAL,
+  wind_direction_deg INTEGER,
   speed_kmh REAL,
   weather_conditions TEXT,
   
@@ -241,6 +242,16 @@ CREATE POLICY "Users can create shares for own maps"
     shared_by = auth.uid()
     AND map_id IN (SELECT id FROM maps WHERE owner_id = auth.uid())
   );
+```
+
+---
+
+## Migrations
+
+```sql
+-- Ajout des colonnes météo détaillées (v2)
+ALTER TABLE catches ADD COLUMN IF NOT EXISTS wind_direction_deg INTEGER;
+ALTER TABLE catches ADD COLUMN IF NOT EXISTS weather_conditions TEXT;
 ```
 
 ---

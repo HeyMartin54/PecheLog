@@ -218,7 +218,7 @@ export default function HomeScreen() {
                 key={catchItem.id}
                 style={styles.catchCard}
                 activeOpacity={0.8}
-                onPress={handleQuickLogPress}
+                onPress={() => router.push(`/catch-detail?id=${catchItem.id}`)}
               >
                 <View style={styles.catchThumb}>
                   <Text style={styles.catchThumbText}>🐟</Text>

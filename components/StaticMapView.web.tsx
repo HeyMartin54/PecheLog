@@ -1,17 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-// Chargement dynamique pour éviter les erreurs SSR
 let MapContainer: any = null;
 let TileLayer: any = null;
 let LeafletMarker: any = null;
-let useMapEvents: any = null;
 
 if (typeof window !== 'undefined') {
   const RL = require('react-leaflet');
   MapContainer = RL.MapContainer;
   TileLayer = RL.TileLayer;
   LeafletMarker = RL.Marker;
-  useMapEvents = RL.useMapEvents;
 }
 
 const TILES = {
@@ -29,47 +26,27 @@ type Coord = { latitude: number; longitude: number };
 
 type Props = {
   coordinate: Coord;
-  onCoordinateChange: (coord: Coord) => void;
+  height?: number;
+  onPress?: () => void;
 };
-
-function MapClickHandler({ onPress }: { onPress: (coord: Coord) => void }) {
-  useMapEvents({
-    click(e: any) {
-      onPress({ latitude: e.latlng.lat, longitude: e.latlng.lng });
-    },
-  });
-  return null;
-}
 
 function makePinIcon() {
   const L = require('leaflet');
   return L.divIcon({
     className: '',
-    html: `<div style="
-      width:34px;height:34px;border-radius:50%;
-      background:#00D4AA;border:2.5px solid #fff;
-      display:flex;align-items:center;justify-content:center;
-      box-shadow:0 2px 8px rgba(0,0,0,0.5);
-      font-size:17px;line-height:34px;text-align:center;
-      cursor:grab;
-    ">📍</div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
+    html: `<div style="width:28px;height:28px;border-radius:50%;background:#00D4AA;border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.5);font-size:14px;line-height:28px;text-align:center;">📍</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
   });
 }
 
-export default function LocationPickerMap({ coordinate, onCoordinateChange }: Props) {
+export default function StaticMapView({ coordinate, height = 180, onPress }: Props) {
   const [leafletReady, setLeafletReady] = useState(false);
   const [satellite, setSatellite] = useState(true);
-  const markerRef = useRef<any>(null);
 
-  // Injecter le CSS Leaflet (réutilise le même tag que map.web.tsx)
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (document.getElementById('leaflet-css')) {
-      setLeafletReady(true);
-      return;
-    }
+    if (document.getElementById('leaflet-css')) { setLeafletReady(true); return; }
     const link = document.createElement('link');
     link.id = 'leaflet-css';
     link.rel = 'stylesheet';
@@ -83,45 +60,54 @@ export default function LocationPickerMap({ coordinate, onCoordinateChange }: Pr
   const tiles = satellite ? TILES.satellite : TILES.standard;
 
   return (
-    <div style={{ position: 'relative', flex: 1, width: '100%', height: '100%' }}>
+    <div style={{ position: 'relative', height, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}>
       <MapContainer
         center={[coordinate.latitude, coordinate.longitude]}
-        zoom={13}
+        zoom={15}
         style={{ width: '100%', height: '100%' }}
+        dragging={false}
+        zoomControl={false}
+        scrollWheelZoom={false}
+        doubleClickZoom={false}
+        keyboard={false}
+        attributionControl={false}
       >
         <TileLayer url={tiles.url} attribution={tiles.attribution} />
-        <MapClickHandler onPress={onCoordinateChange} />
         <LeafletMarker
           position={[coordinate.latitude, coordinate.longitude]}
-          draggable
           icon={makePinIcon()}
-          ref={markerRef}
-          eventHandlers={{
-            dragend() {
-              const latlng = markerRef.current?.getLatLng();
-              if (latlng) {
-                onCoordinateChange({ latitude: latlng.lat, longitude: latlng.lng });
-              }
-            },
-          }}
         />
       </MapContainer>
 
+      {/* Overlay tappable */}
+      {onPress && (
+        <div
+          onClick={onPress}
+          style={{ position: 'absolute', inset: 0, zIndex: 500, cursor: 'pointer' }}
+        />
+      )}
+
+      {/* Badge "Modifier" */}
+      {onPress && (
+        <div style={{
+          position: 'absolute', top: 10, right: 10, zIndex: 1000,
+          background: 'rgba(0,212,170,0.88)', color: '#fff',
+          borderRadius: 12, padding: '4px 10px',
+          fontSize: 11, fontWeight: 600, pointerEvents: 'none',
+        }}>
+          ✏️ Modifier
+        </div>
+      )}
+
+      {/* Toggle satellite / carte */}
       <button
         onClick={() => setSatellite((v) => !v)}
         style={{
-          position: 'absolute',
-          bottom: 14,
-          right: 14,
-          zIndex: 1000,
-          background: 'rgba(6,20,37,0.88)',
-          color: '#fff',
+          position: 'absolute', bottom: 10, right: 10, zIndex: 1000,
+          background: 'rgba(6,20,37,0.85)', color: '#fff',
           border: '1px solid rgba(255,255,255,0.18)',
-          borderRadius: 20,
-          padding: '7px 14px',
-          fontSize: 13,
-          fontWeight: 500,
-          cursor: 'pointer',
+          borderRadius: 16, padding: '5px 12px',
+          fontSize: 12, fontWeight: 500, cursor: 'pointer',
         }}
       >
         {satellite ? '🗺 Carte' : '🛰 Satellite'}
