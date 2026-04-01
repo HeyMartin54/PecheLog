@@ -30,6 +30,7 @@ type Coord = { latitude: number; longitude: number };
 type Props = {
   coordinate: Coord;
   onCoordinateChange: (coord: Coord) => void;
+  height?: number;
 };
 
 function MapClickHandler({ onPress }: { onPress: (coord: Coord) => void }) {
@@ -58,7 +59,7 @@ function makePinIcon() {
   });
 }
 
-export default function LocationPickerMap({ coordinate, onCoordinateChange }: Props) {
+export default function LocationPickerMap({ coordinate, onCoordinateChange, height }: Props) {
   const [leafletReady, setLeafletReady] = useState(false);
   const [satellite, setSatellite] = useState(true);
   const markerRef = useRef<any>(null);
@@ -83,7 +84,7 @@ export default function LocationPickerMap({ coordinate, onCoordinateChange }: Pr
   const tiles = satellite ? TILES.satellite : TILES.standard;
 
   return (
-    <div style={{ position: 'relative', flex: 1, width: '100%', height: '100%' }}>
+    <div style={{ width: '100%', height: height ? `${height}px` : '100%', position: 'relative' }}>
       <MapContainer
         center={[coordinate.latitude, coordinate.longitude]}
         zoom={13}

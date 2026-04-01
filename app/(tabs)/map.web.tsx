@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { supabase } from '@/lib/supabase';
+import { colors } from '@/lib/theme';
 
 // ─── Leaflet (web uniquement) ─────────────────────────────────────────────────
 let MapContainer: any = null;
@@ -59,13 +60,6 @@ const SPECIES_COLORS: Record<string, string> = {
   site: '#FFFFFF',
 };
 
-const PERIOD_OPTIONS = [
-  { label: '7 jours', value: '7j' },
-  { label: '30 jours', value: '30j' },
-  { label: '3 mois', value: '3m' },
-  { label: 'Cette année', value: '1an' },
-];
-
 const WEATHER_OPTIONS = ['☀️ Ensoleillé', '⛅ Nuageux', '🌧️ Pluie', '💨 Vent', '❄️ Froid'];
 
 const TILES = {
@@ -89,15 +83,6 @@ function getSpeciesColor(species: string): string {
 
 function formatDateFr(iso: string): string {
   return new Date(iso).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-function periodStart(period: string): Date {
-  const now = new Date();
-  if (period === '7j') return new Date(now.getTime() - 7 * 86400000);
-  if (period === '30j') return new Date(now.getTime() - 30 * 86400000);
-  if (period === '3m') return new Date(now.getTime() - 90 * 86400000);
-  if (period === '1an') return new Date(now.getFullYear(), 0, 1);
-  return new Date(0);
 }
 
 function countActiveFilters(f: FilterState): number {
@@ -427,16 +412,43 @@ export default function MapScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const ACCENT = '#00E6B5';
-const CARD_BG = '#0E2236';
+const ACCENT = colors.accent;
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, backgroundColor: '#061425', alignItems: 'center', justifyContent: 'center' },
-  emptyCard: {
-    position: 'absolute', bottom: 36, left: 24, right: 24,
-    backgroundColor: CARD_BG, borderRadius: 14, padding: 18, alignItems: 'center',
+  center: {
+    flex: 1,
+    backgroundColor: colors.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  emptyTitle: { fontSize: 15, fontWeight: '600', color: '#fff', marginBottom: 5 },
-  emptySubtitle: { fontSize: 13, color: 'rgba(255,255,255,0.55)', textAlign: 'center', lineHeight: 19 },
+  emptyCard: {
+    position: 'absolute',
+    bottom: 40,
+    left: 20,
+    right: 20,
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 20,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 6,
+  },
+  emptySubtitle: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
 });

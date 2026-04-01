@@ -1,45 +1,69 @@
 import React from 'react';
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
+import { colors } from '@/lib/theme';
 
-// You can explore the built-in icon families and icons on the web at https://icons.expo.fyi/
 function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>['name'];
+  name: React.ComponentProps<typeof Ionicons>['name'];
   color: string;
+  focused: boolean;
 }) {
-  return <FontAwesome size={28} style={{ marginBottom: -3 }} {...props} />;
+  return (
+    <View style={[tabIconStyles.wrapper, props.focused && tabIconStyles.wrapperActive]}>
+      <Ionicons size={22} {...props} />
+    </View>
+  );
 }
 
-const TAB_BAR_BG = '#0B1A2B';
-const TAB_ACCENT = '#00E6B5';
+const tabIconStyles = StyleSheet.create({
+  wrapper: {
+    width: 40,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
+  wrapperActive: {
+    backgroundColor: colors.accentSubtle,
+  },
+});
 
 export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: TAB_ACCENT,
-        tabBarInactiveTintColor: 'rgba(255,255,255,0.45)',
+        tabBarActiveTintColor: colors.tabActive,
+        tabBarInactiveTintColor: colors.tabInactive,
         tabBarStyle: {
-          backgroundColor: TAB_BAR_BG,
-          borderTopColor: 'rgba(255,255,255,0.08)',
+          backgroundColor: colors.tabBar,
+          borderTopColor: colors.tabBarBorder,
           borderTopWidth: StyleSheet.hairlineWidth,
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 6,
+        },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '500',
+          marginTop: 2,
         },
         headerStyle: {
-          backgroundColor: TAB_BAR_BG,
+          backgroundColor: colors.tabBar,
         },
-        headerTintColor: '#FFFFFF',
+        headerTintColor: colors.textPrimary,
         headerTitleStyle: { fontWeight: '600' },
-        // Pas de header blanc « Tab One » sur l’accueil : thème sombre cohérent
         headerShown: useClientOnlyValue(false, false),
       }}>
       <Tabs.Screen
         name="index"
         options={{
           title: 'Accueil',
-          tabBarIcon: ({ color }) => <TabBarIcon name="home" color={color} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name="home" color={color} focused={focused} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -50,14 +74,18 @@ export default function TabLayout() {
         name="map"
         options={{
           title: 'Carte',
-          tabBarIcon: ({ color }) => <TabBarIcon name="map" color={color} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name="map" color={color} focused={focused} />
+          ),
         }}
       />
       <Tabs.Screen
         name="stats"
         options={{
-          title: 'Statistiques',
-          tabBarIcon: ({ color }) => <TabBarIcon name="bar-chart" color={color} />,
+          title: 'Stats',
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name="bar-chart" color={color} focused={focused} />
+          ),
         }}
       />
     </Tabs>

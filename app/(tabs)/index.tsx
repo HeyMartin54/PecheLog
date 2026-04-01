@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   StyleSheet,
   ScrollView,
   Text,
@@ -9,16 +10,20 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { useLocation } from '@/lib/hooks/useLocation';
 import { useWeather } from '@/lib/hooks/useWeather';
 import { supabase } from '@/lib/supabase';
+import { colors, typography, spacing, radius, shadow } from '@/lib/theme';
+import { getSpeciesConfig } from '@/lib/species';
 
 type Stat = {
   label: string;
   value: string;
+  icon: string;
 };
 
 type CatchRow = {
@@ -55,8 +60,69 @@ function sizeLabel(row: CatchRow): string {
   if (row.weight_lbs != null && !Number.isNaN(row.weight_lbs)) {
     return `${row.weight_lbs.toFixed(1)} lb`;
   }
-  return '—';
+  return '';
 }
+
+// ── Composant avatar d'espèce ──────────────────────────────────────────────
+
+function SpeciesAvatar({ species, size = 46 }: { species: string; size?: number }) {
+  const cfg = getSpeciesConfig(species);
+  const [imgError, setImgError] = useState(false);
+
+  if (cfg.photoUrl && !imgError) {
+    return (
+      <View
+        style={[
+          speciesAvatarStyles.container,
+          { width: size, height: size, borderRadius: size / 2, borderColor: cfg.color },
+        ]}
+      >
+        <Image
+          source={{ uri: cfg.photoUrl }}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+          onError={() => setImgError(true)}
+          resizeMode="cover"
+        />
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        speciesAvatarStyles.fallback,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: cfg.bgColor,
+          borderColor: cfg.color,
+        },
+      ]}
+    >
+      <Text style={[speciesAvatarStyles.code, { color: cfg.color, fontSize: size * 0.3 }]}>
+        {cfg.code}
+      </Text>
+    </View>
+  );
+}
+
+const speciesAvatarStyles = StyleSheet.create({
+  container: {
+    borderWidth: 2,
+    overflow: 'hidden',
+  },
+  fallback: {
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  code: {
+    fontWeight: '700',
+  },
+});
+
+// ── Écran principal ────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -69,9 +135,9 @@ export default function HomeScreen() {
 
   const [displayName, setDisplayName] = useState<string>('Pêcheur');
   const [stats, setStats] = useState<Stat[]>([
-    { label: 'Prises', value: '—' },
-    { label: 'Lacs', value: '—' },
-    { label: 'lb record', value: '—' },
+    { label: 'Prises', value: '—', icon: 'fish' },
+    { label: 'Lacs', value: '—', icon: 'water' },
+    { label: 'lb record', value: '—', icon: 'trophy' },
   ]);
   const [recentCatches, setRecentCatches] = useState<CatchRow[]>([]);
   const [homeDataLoading, setHomeDataLoading] = useState(false);
@@ -122,11 +188,12 @@ export default function HomeScreen() {
       const recordLb = weights.length > 0 ? Math.max(...weights) : null;
 
       setStats([
-        { label: 'Prises', value: String(list.length) },
-        { label: 'Lacs', value: String(lakeSet.size) },
+        { label: 'Prises', value: String(list.length), icon: 'fish' },
+        { label: 'Lacs', value: String(lakeSet.size), icon: 'water' },
         {
           label: 'lb record',
           value: recordLb != null ? recordLb.toFixed(1) : '—',
+          icon: 'trophy',
         },
       ]);
       setRecentCatches(list.slice(0, 5));
@@ -143,13 +210,9 @@ export default function HomeScreen() {
 
   const headerLakeName = lakeName ?? 'Lac inconnu';
   const headerTemp =
-    temperatureC != null ? `${temperatureC.toFixed(1)}°C` : 'Météo…';
+    temperatureC != null ? `${temperatureC.toFixed(1)}°C` : null;
   const headerWind =
-    windKmh != null ? `${windKmh.toFixed(1)} km/h` : 'Vent…';
-
-  const handleQuickLogPress = () => {
-    router.push('/log-catch');
-  };
+    windKmh != null ? `${windKmh.toFixed(1)} km/h` : null;
 
   return (
     <View style={styles.container}>
@@ -157,37 +220,67 @@ export default function HomeScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* ── Header ──────────────────────────────────────────────────────── */}
         <View style={styles.header}>
-          <Text style={styles.greeting}>Bonjour 👋</Text>
-          <Text style={styles.name}>{displayName}</Text>
-          <View style={styles.weatherRow}>
-            <Text style={styles.weatherLocation} numberOfLines={2}>
-              ☀️ {headerLakeName}
-            </Text>
+          <View style={styles.greetingRow}>
+            <View>
+              <Text style={styles.greeting}>Bonjour 👋</Text>
+              <Text style={styles.name}>{displayName}</Text>
+            </View>
+          </View>
+
+          {/* Bandeau météo */}
+          <View style={styles.weatherCard}>
+            <View style={styles.weatherLocation}>
+              <Ionicons name="location" size={13} color={colors.accent} />
+              <Text style={styles.weatherLocationText} numberOfLines={1}>
+                {headerLakeName}
+              </Text>
+            </View>
             <View style={styles.weatherBadgesRow}>
-              <Text style={styles.weatherBadge}>🌡 {headerTemp}</Text>
-              <Text style={styles.weatherBadge}>💨 {headerWind}</Text>
+              {headerTemp && (
+                <View style={styles.weatherBadge}>
+                  <Ionicons name="thermometer-outline" size={13} color={colors.accent} />
+                  <Text style={styles.weatherBadgeText}>{headerTemp}</Text>
+                </View>
+              )}
+              {headerWind && (
+                <View style={styles.weatherBadge}>
+                  <Ionicons name="wind" size={13} color={colors.accent} />
+                  <Text style={styles.weatherBadgeText}>{headerWind}</Text>
+                </View>
+              )}
+              {!headerTemp && !headerWind && (
+                <View style={styles.weatherBadge}>
+                  <ActivityIndicator size="small" color={colors.accent} />
+                  <Text style={styles.weatherBadgeText}>Météo…</Text>
+                </View>
+              )}
             </View>
           </View>
         </View>
 
-        {/* Quick log button */}
-        <TouchableOpacity style={styles.quickLogButton} activeOpacity={0.9} onPress={handleQuickLogPress}>
-          <View style={styles.quickLogIcon}>
-            <Text style={styles.quickLogIconText}>🎣</Text>
+        {/* ── Bouton Nouvelle prise ────────────────────────────────────────── */}
+        <TouchableOpacity
+          style={styles.quickLogButton}
+          activeOpacity={0.88}
+          onPress={() => router.push('/log-catch')}
+        >
+          <View style={styles.quickLogIconWrapper}>
+            <Ionicons name="add" size={28} color={colors.bg} />
           </View>
           <View style={styles.quickLogText}>
             <Text style={styles.quickLogTitle}>Nouvelle prise !</Text>
-            <Text style={styles.quickLogSubtitle}>Touche 1 bouton — on s&apos;occupe du reste</Text>
+            <Text style={styles.quickLogSubtitle}>1 bouton — on s'occupe du reste</Text>
           </View>
+          <Ionicons name="chevron-forward" size={20} color={`${colors.bg}AA`} />
         </TouchableOpacity>
 
-        {/* Stats row */}
+        {/* ── Stats ─────────────────────────────────────────────────────────── */}
         <View style={styles.statsRow}>
           {homeDataLoading ? (
             <View style={styles.statsLoading}>
-              <ActivityIndicator color={ACCENT} />
+              <ActivityIndicator color={colors.accent} />
             </View>
           ) : (
             stats.map((stat) => (
@@ -199,37 +292,55 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* Recent catches */}
+        {/* ── Prises récentes ───────────────────────────────────────────────── */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Prises récentes</Text>
-          <Text style={styles.sectionLink}>Voir tout →</Text>
+          <TouchableOpacity>
+            <Text style={styles.sectionLink}>Voir tout</Text>
+          </TouchableOpacity>
         </View>
 
-        <View>
+        <View style={styles.catchList}>
           {recentCatches.length === 0 && !homeDataLoading ? (
-            <Text style={styles.emptyRecent}>
-              {user?.id
-                ? 'Aucune prise pour l’instant. Enregistre ta première avec le bouton ci-dessus.'
-                : 'Aucune prise affichée (mode sans compte : vérifie la politique RLS SELECT sur catches, ou connecte-toi avec le compte de test).'}
-            </Text>
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateIcon}>🎣</Text>
+              <Text style={styles.emptyStateTitle}>Aucune prise encore</Text>
+              <Text style={styles.emptyStateBody}>
+                Enregistre ta première prise avec le bouton ci-dessus.
+              </Text>
+            </View>
           ) : (
-            recentCatches.map((catchItem) => (
-              <TouchableOpacity
-                key={catchItem.id}
-                style={styles.catchCard}
-                activeOpacity={0.8}
-                onPress={() => router.push(`/catch-detail?id=${catchItem.id}`)}
-              >
-                <View style={styles.catchThumb}>
-                  <Text style={styles.catchThumbText}>🐟</Text>
-                </View>
-                <View style={styles.catchInfo}>
-                  <Text style={styles.catchSpecies}>{catchItem.species}</Text>
-                  <Text style={styles.catchMeta}>{catchMetaLine(catchItem)}</Text>
-                </View>
-                <Text style={styles.catchSize}>{sizeLabel(catchItem)}</Text>
-              </TouchableOpacity>
-            ))
+            recentCatches.map((catchItem, index) => {
+              const size = sizeLabel(catchItem);
+              const cfg = getSpeciesConfig(catchItem.species);
+              return (
+                <TouchableOpacity
+                  key={catchItem.id}
+                  style={[
+                    styles.catchCard,
+                    index < recentCatches.length - 1 && styles.catchCardBorder,
+                  ]}
+                  activeOpacity={0.75}
+                  onPress={() => router.push(`/catch-detail?id=${catchItem.id}`)}
+                >
+                  <SpeciesAvatar species={catchItem.species} size={46} />
+                  <View style={styles.catchInfo}>
+                    <View style={styles.catchTopRow}>
+                      <Text style={styles.catchSpecies}>{catchItem.species}</Text>
+                      {size ? (
+                        <View style={styles.catchSizeBadge}>
+                          <Text style={styles.catchSizeText}>{size}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.catchMeta} numberOfLines={1}>
+                      {catchMetaLine(catchItem)}
+                    </Text>
+                  </View>
+                  <View style={[styles.speciesDot, { backgroundColor: cfg.color }]} />
+                </TouchableOpacity>
+              );
+            })
           )}
         </View>
       </ScrollView>
@@ -237,191 +348,240 @@ export default function HomeScreen() {
   );
 }
 
-const ACCENT = '#00E6B5';
-const CARD_BG = '#0E2236';
-const BORDER = 'rgba(255,255,255,0.06)';
-const TEXT_MUTED = 'rgba(255,255,255,0.6)';
+// ── Styles ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#061425',
+    backgroundColor: colors.bg,
   },
   scrollContent: {
-    paddingTop: 10,
-    paddingBottom: 90,
+    paddingTop: 14,
+    paddingBottom: 96,
   },
+
+  // Header
   header: {
-    paddingHorizontal: 24,
-    paddingBottom: 20,
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.lg,
+    gap: spacing.md,
+  },
+  greetingRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
   },
   greeting: {
-    fontSize: 14,
-    color: TEXT_MUTED,
+    ...typography.bodySmall,
+    color: colors.textMuted,
     marginBottom: 2,
   },
   name: {
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-    color: '#FFFFFF',
+    ...typography.h1,
+    color: colors.textPrimary,
   },
-  weatherRow: {
-    marginTop: 10,
-    gap: 8,
+
+  // Carte météo
+  weatherCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    gap: spacing.sm,
   },
   weatherLocation: {
-    fontSize: 13,
-    color: TEXT_MUTED,
-    lineHeight: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  weatherLocationText: {
+    ...typography.bodySmall,
+    color: colors.textMuted,
+    flex: 1,
   },
   weatherBadgesRow: {
     flexDirection: 'row',
+    gap: spacing.sm,
     flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 8,
   },
   weatherBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-    fontSize: 12,
-    color: ACCENT,
-    backgroundColor: 'rgba(0, 212, 170, 0.08)',
-  },
-  quickLogButton: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-    paddingVertical: 20,
-    paddingHorizontal: 24,
-    borderRadius: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
-    backgroundColor: ACCENT,
-    shadowColor: '#00D4AA',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 18,
-    elevation: 6,
+    gap: 5,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 5,
+    borderRadius: radius.full,
+    backgroundColor: colors.accentSubtle,
+    borderWidth: 1,
+    borderColor: colors.accentGlow,
   },
-  quickLogIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'transparent',
+  weatherBadgeText: {
+    ...typography.label,
+    color: colors.accent,
+  },
+
+  // Bouton "Nouvelle prise"
+  quickLogButton: {
+    marginHorizontal: spacing.xl,
+    marginBottom: spacing.xl,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.lg,
+    backgroundColor: colors.accent,
+    ...shadow.accent,
+  },
+  quickLogIconWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(0,0,0,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  quickLogIconText: {
-    fontSize: 26,
   },
   quickLogText: {
     flex: 1,
   },
   quickLogTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
-    color: '#ffffff',
+    color: colors.bg,
   },
   quickLogSubtitle: {
-    fontSize: 13,
+    fontSize: 12,
     marginTop: 2,
-    color: 'rgba(255,255,255,0.85)',
+    color: `${colors.bg}BB`,
   },
+
+  // Stats
   statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'stretch',
-    paddingHorizontal: 24,
-    marginBottom: 24,
-    minHeight: 88,
+    paddingHorizontal: spacing.xl,
+    marginBottom: spacing.xl,
+    gap: spacing.sm,
+    minHeight: 82,
   },
   statsLoading: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emptyRecent: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    fontSize: 14,
-    color: TEXT_MUTED,
-    lineHeight: 20,
-  },
   statCard: {
     flex: 1,
-    marginHorizontal: 4,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: CARD_BG,
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: colors.border,
     alignItems: 'center',
+    gap: 3,
   },
   statValue: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: ACCENT,
+    ...typography.numeric,
+    color: colors.accent,
   },
   statLabel: {
-    marginTop: 4,
-    fontSize: 11,
-    color: TEXT_MUTED,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    ...typography.caption,
+    color: colors.textMuted,
   },
+
+  // Section header
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    marginBottom: 14,
+    paddingHorizontal: spacing.xl,
+    marginBottom: spacing.md,
   },
   sectionTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#FFFFFF',
+    ...typography.h3,
+    color: colors.textPrimary,
   },
   sectionLink: {
-    fontSize: 13,
-    color: ACCENT,
+    ...typography.bodySmall,
+    color: colors.accent,
+    fontWeight: '500',
+  },
+
+  // Liste des prises
+  catchList: {
+    marginHorizontal: spacing.xl,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
   },
   catchCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 14,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 13,
+    gap: 13,
   },
-  catchThumb: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CARD_BG,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
-  catchThumbText: {
-    fontSize: 22,
+  catchCardBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   catchInfo: {
     flex: 1,
+    gap: 3,
+  },
+  catchTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
   },
   catchSpecies: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: colors.textPrimary,
+    flex: 1,
+  },
+  catchSizeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.full,
+    backgroundColor: colors.surface2,
+  },
+  catchSizeText: {
+    ...typography.label,
+    color: colors.textMuted,
   },
   catchMeta: {
-    marginTop: 2,
-    fontSize: 12,
-    color: TEXT_MUTED,
+    ...typography.bodySmall,
+    color: colors.textMuted,
   },
-  catchSize: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginLeft: 8,
+  speciesDot: {
+    width: 7,
+    height: 7,
+    borderRadius: radius.full,
+    marginLeft: 4,
+  },
+
+  // État vide
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+    paddingHorizontal: spacing.xl,
+    gap: spacing.sm,
+  },
+  emptyStateIcon: {
+    fontSize: 40,
+    marginBottom: spacing.xs,
+  },
+  emptyStateTitle: {
+    ...typography.h3,
+    color: colors.textMuted,
+  },
+  emptyStateBody: {
+    ...typography.bodySmall,
+    color: colors.textSubtle,
+    textAlign: 'center',
+    lineHeight: 19,
   },
 });

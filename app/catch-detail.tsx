@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -15,10 +16,19 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import LocationPickerMap from '@/components/LocationPickerMap';
-import StaticMapView from '@/components/StaticMapView';
 import { supabase } from '@/lib/supabase';
 
 type SizeCategory = 'small' | 'medium' | 'large' | 'trophy';
+type SizeMode = 'approx' | 'measures';
+
+type CatchMedia = {
+  id: string;
+  media_type: 'photo' | 'video';
+  storage_path: string;
+  thumbnail_path: string | null;
+  local_uri: string | null;
+  uploaded: boolean;
+};
 
 function windDegToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
@@ -58,6 +68,7 @@ const SIZE_OPTIONS: SizeCategory[] = ['small', 'medium', 'large', 'trophy'];
 export default function CatchDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const isWeb = Platform.OS === 'web';
 
   const [catch_, setCatch] = useState<CatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,9 +82,11 @@ export default function CatchDetailScreen() {
   const [lure, setLure] = useState('');
   const [lakeName, setLakeName] = useState('');
   const [depthMeters, setDepthMeters] = useState('');
+  const [sizeMode, setSizeMode] = useState<SizeMode>('approx');
   const [sizeCategory, setSizeCategory] = useState<SizeCategory | null>(null);
   const [weightLbs, setWeightLbs] = useState('');
   const [lengthInches, setLengthInches] = useState('');
+  const [mediaItems, setMediaItems] = useState<CatchMedia[]>([]);
   const [notes, setNotes] = useState('');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
@@ -88,24 +101,32 @@ export default function CatchDetailScreen() {
   async function loadCatch() {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('catches')
-        .select(
-          'id, species, lure, latitude, longitude, lake_name, depth_meters, depth_source, ' +
-          'temperature_c, wind_speed_kmh, wind_direction_deg, speed_kmh, weather_conditions, ' +
-          'size_category, weight_lbs, length_inches, notes, caught_at',
-        )
-        .eq('id', id)
-        .single();
+      const [catchRes, mediaRes] = await Promise.all([
+        supabase
+          .from('catches')
+          .select(
+            'id, species, lure, latitude, longitude, lake_name, depth_meters, depth_source, ' +
+            'temperature_c, wind_speed_kmh, wind_direction_deg, speed_kmh, weather_conditions, ' +
+            'size_category, weight_lbs, length_inches, notes, caught_at',
+          )
+          .eq('id', id)
+          .single(),
+        supabase
+          .from('catch_media')
+          .select('id, media_type, storage_path, thumbnail_path, local_uri, uploaded')
+          .eq('catch_id', id)
+          .order('created_at'),
+      ]);
 
-      if (error || !data) {
+      if (catchRes.error || !catchRes.data) {
         Alert.alert('Erreur', 'Impossible de charger cette prise.');
         router.back();
         return;
       }
 
-      setCatch(data as unknown as CatchDetail);
-      populateForm(data as unknown as CatchDetail);
+      setCatch(catchRes.data as unknown as CatchDetail);
+      populateForm(catchRes.data as unknown as CatchDetail);
+      setMediaItems((mediaRes.data ?? []) as CatchMedia[]);
     } finally {
       setLoading(false);
     }
@@ -115,7 +136,9 @@ export default function CatchDetailScreen() {
     setSpecies(data.species ?? '');
     setLure(data.lure ?? '');
     setLakeName(data.lake_name ?? '');
-    setDepthMeters(data.depth_meters != null ? String(data.depth_meters) : '');
+    setDepthMeters(data.depth_meters != null ? (data.depth_meters * 3.28084).toFixed(1) : '');
+    const hasMeasures = data.weight_lbs != null || data.length_inches != null;
+    setSizeMode(hasMeasures ? 'measures' : 'approx');
     setSizeCategory(data.size_category ?? null);
     setWeightLbs(data.weight_lbs != null ? String(data.weight_lbs) : '');
     setLengthInches(data.length_inches != null ? String(data.length_inches) : '');
@@ -148,10 +171,10 @@ export default function CatchDetailScreen() {
         species: species.trim(),
         lure: lure.trim() || null,
         lake_name: lakeName.trim() || null,
-        depth_meters: depthMeters !== '' ? parseFloat(depthMeters) : null,
-        size_category: sizeCategory,
-        weight_lbs: weightLbs !== '' ? parseFloat(weightLbs) : null,
-        length_inches: lengthInches !== '' ? parseFloat(lengthInches) : null,
+        depth_meters: depthMeters !== '' ? parseFloat(depthMeters) * 0.3048 : null,
+        size_category: sizeMode === 'approx' ? sizeCategory : null,
+        weight_lbs: sizeMode === 'measures' && weightLbs !== '' ? parseFloat(weightLbs) : null,
+        length_inches: sizeMode === 'measures' && lengthInches !== '' ? parseFloat(lengthInches) : null,
         notes: notes.trim() || null,
         latitude,
         longitude,
@@ -210,6 +233,7 @@ export default function CatchDetailScreen() {
     minute: '2-digit',
   });
 
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -237,6 +261,7 @@ export default function CatchDetailScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        style={{ flex: 1 }}
       >
         {/* Title row */}
         <View style={styles.titleRow}>
@@ -260,40 +285,153 @@ export default function CatchDetailScreen() {
 
         {/* Section: Lieu */}
         <SectionCard title="📍 Lieu">
-          {latitude != null && longitude != null && (
-            <StaticMapView
-              coordinate={{ latitude, longitude }}
-              height={160}
-              onPress={editing ? () => setShowLocationPicker(true) : undefined}
-            />
+          {/* Carte dans la card — hauteur fixe, aucun problème de flex */}
+          {pickerCoord != null && (
+            <View style={styles.cardMap}>
+              <LocationPickerMap
+                coordinate={pickerCoord}
+                height={280}
+                onCoordinateChange={(c) => {
+                  if (!editing) return;
+                  setPickerCoord(c);
+                  setLatitude(c.latitude);
+                  setLongitude(c.longitude);
+                }}
+              />
+              {/* Overlay bloquant les interactions hors mode édition */}
+              {!editing && (
+                <View style={[StyleSheet.absoluteFill, { zIndex: 500 }]} />
+              )}
+              {/* Bouton Modifier visible en mode édition — mobile uniquement */}
+              {!isWeb && editing && (
+                <TouchableOpacity
+                  style={styles.cardMapEditBtn}
+                  onPress={() => setShowLocationPicker(true)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.cardMapEditBtnText}>✏️ Choisir sur la carte</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           )}
-          {editing ? (
-            <TextInput
-              style={styles.lakeNameInput}
-              value={lakeName}
-              onChangeText={setLakeName}
-              placeholder="Nom du lac"
-              placeholderTextColor={TEXT_MUTED}
-            />
-          ) : (
-            <Text style={styles.lakeNameTitle}>
-              {catch_.lake_name ?? '—'}
-            </Text>
-          )}
-          <InfoRow
-            label="Coordonnées GPS"
-            value={
-              latitude != null && longitude != null
-                ? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
-                : '—'
-            }
-          />
-          <InfoRow label="Date" value={caughtDate} />
-          <InfoRow label="Heure" value={caughtTime} />
+
+          <View style={styles.lieuContent}>
+            <View style={{ flex: 1 }}>
+              {editing ? (
+                <TextInput
+                  style={styles.lakeNameInput}
+                  value={lakeName}
+                  onChangeText={setLakeName}
+                  placeholder="Nom du lac"
+                  placeholderTextColor={TEXT_MUTED}
+                />
+              ) : (
+                <Text style={styles.lakeNameTitle}>
+                  {catch_.lake_name ?? '—'}
+                </Text>
+              )}
+              <InfoRow
+                label="Coordonnées GPS"
+                value={
+                  latitude != null && longitude != null
+                    ? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+                    : '—'
+                }
+              />
+              <InfoRow label="Date" value={caughtDate} />
+              <InfoRow label="Heure" value={caughtTime} />
+            </View>
+          </View>
         </SectionCard>
 
         {/* Section: Prise */}
         <SectionCard title="Détails de la prise">
+          {editing ? (
+            <>
+              {/* Toggle Approximatif / Mesures */}
+              <View style={[styles.fieldRow, { borderTopWidth: 0, paddingBottom: 4 }]}>
+                {(['approx', 'measures'] as SizeMode[]).map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.sizeChip, sizeMode === m && styles.sizeChipActive]}
+                    onPress={() => setSizeMode(m)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.sizeChipText, sizeMode === m && styles.sizeChipTextActive]}>
+                      {m === 'approx' ? 'P / M / G' : 'Poids / Longueur'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {sizeMode === 'approx' ? (
+                <View style={styles.fieldRow}>
+                  <Text style={styles.fieldLabel}>Taille</Text>
+                  <View style={styles.sizeChipsRow}>
+                    {SIZE_OPTIONS.map((opt) => (
+                      <TouchableOpacity
+                        key={opt}
+                        style={[styles.sizeChip, sizeCategory === opt && styles.sizeChipActive]}
+                        onPress={() => setSizeCategory(sizeCategory === opt ? null : opt)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[styles.sizeChipText, sizeCategory === opt && styles.sizeChipTextActive]}>
+                          {SIZE_LABELS[opt]}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ) : (
+                <>
+                  <EditableRow label="Poids (lb)" value={weightLbs} editing onChangeText={setWeightLbs} placeholder="0.0" keyboardType="decimal-pad" />
+                  <EditableRow label="Longueur (po)" value={lengthInches} editing onChangeText={setLengthInches} placeholder="0.0" keyboardType="decimal-pad" />
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {catch_.size_category && (
+                <InfoRow label="Taille" value={SIZE_LABELS[catch_.size_category]} />
+              )}
+              {catch_.weight_lbs != null && (
+                <InfoRow label="Poids" value={`${catch_.weight_lbs.toFixed(1)} lb`} />
+              )}
+              {catch_.length_inches != null && (
+                <InfoRow label="Longueur" value={`${catch_.length_inches.toFixed(1)} po`} />
+              )}
+              {!catch_.size_category && catch_.weight_lbs == null && catch_.length_inches == null && (
+                <InfoRow label="Taille" value="—" />
+              )}
+            </>
+          )}
+
+          {/* Thumbnails des médias */}
+          {mediaItems.length > 0 && (
+            <View style={styles.mediaThumbnailRow}>
+              {mediaItems.map((item) => {
+                const uri = item.uploaded
+                  ? supabase.storage.from('catch-media').getPublicUrl(item.thumbnail_path ?? item.storage_path).data.publicUrl
+                  : item.local_uri ?? undefined;
+                return (
+                  <View key={item.id} style={styles.mediaThumbnail}>
+                    {uri ? (
+                      <Image source={{ uri }} style={styles.mediaThumbnailImg} />
+                    ) : null}
+                    {item.media_type === 'video' && (
+                      <View style={styles.videoOverlay}>
+                        <Text style={styles.videoIcon}>▶</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </SectionCard>
+
+        {/* Section: Technique */}
+        <SectionCard title="🎣 Technique">
           <EditableRow
             label="Leurre"
             value={editing ? lure : catch_.lure ?? '—'}
@@ -302,55 +440,16 @@ export default function CatchDetailScreen() {
             placeholder="Leurre utilisé"
           />
           <EditableRow
-            label="Profondeur (m)"
-            value={editing ? depthMeters : catch_.depth_meters != null ? `${catch_.depth_meters} m` : '—'}
+            label="Profondeur (pi)"
+            value={editing ? depthMeters : catch_.depth_meters != null ? `${(catch_.depth_meters * 3.28084).toFixed(1)} pi` : '—'}
             editing={editing}
             onChangeText={setDepthMeters}
             placeholder="0.0"
             keyboardType="decimal-pad"
           />
-
-          {/* Taille */}
-          {editing ? (
-            <View style={styles.fieldRow}>
-              <Text style={styles.fieldLabel}>Taille</Text>
-              <View style={styles.sizeChipsRow}>
-                {SIZE_OPTIONS.map((opt) => (
-                  <TouchableOpacity
-                    key={opt}
-                    style={[styles.sizeChip, sizeCategory === opt && styles.sizeChipActive]}
-                    onPress={() => setSizeCategory(sizeCategory === opt ? null : opt)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.sizeChipText, sizeCategory === opt && styles.sizeChipTextActive]}>
-                      {SIZE_LABELS[opt]}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-          ) : (
-            <InfoRow
-              label="Taille"
-              value={catch_.size_category ? SIZE_LABELS[catch_.size_category] : '—'}
-            />
-          )}
-
-          <EditableRow
-            label="Poids (lb)"
-            value={editing ? weightLbs : catch_.weight_lbs != null ? `${catch_.weight_lbs.toFixed(1)} lb` : '—'}
-            editing={editing}
-            onChangeText={setWeightLbs}
-            placeholder="0.0"
-            keyboardType="decimal-pad"
-          />
-          <EditableRow
-            label="Longueur (po)"
-            value={editing ? lengthInches : catch_.length_inches != null ? `${catch_.length_inches.toFixed(1)} po` : '—'}
-            editing={editing}
-            onChangeText={setLengthInches}
-            placeholder="0.0"
-            keyboardType="decimal-pad"
+          <InfoRow
+            label="Vitesse bateau"
+            value={catch_.speed_kmh != null ? `${catch_.speed_kmh.toFixed(1)} km/h` : '—'}
           />
         </SectionCard>
 
@@ -359,28 +458,20 @@ export default function CatchDetailScreen() {
           <InfoRow
             label="Ciel"
             value={catch_.weather_conditions ?? '—'}
-            auto
           />
           <InfoRow
             label="Température"
             value={catch_.temperature_c != null ? `${catch_.temperature_c.toFixed(1)} °C` : '—'}
-            auto
           />
           <InfoRow
             label="Vent"
             value={
               catch_.wind_speed_kmh != null
                 ? catch_.wind_direction_deg != null
-                  ? `${windDegToCompass(catch_.wind_direction_deg)} — ${catch_.wind_speed_kmh.toFixed(1)} km/h`
+                  ? `${windDegToCompass(catch_.wind_direction_deg)} ${catch_.wind_speed_kmh.toFixed(1)} km/h`
                   : `${catch_.wind_speed_kmh.toFixed(1)} km/h`
                 : '—'
             }
-            auto
-          />
-          <InfoRow
-            label="Vitesse bateau"
-            value={catch_.speed_kmh != null ? `${catch_.speed_kmh.toFixed(1)} km/h` : '—'}
-            auto
           />
         </SectionCard>
 
@@ -446,8 +537,8 @@ export default function CatchDetailScreen() {
         )}
       </ScrollView>
 
-      {/* Modal sélection GPS */}
-      <Modal visible={showLocationPicker} animationType="slide" statusBarTranslucent>
+      {/* Modal sélection GPS — mobile uniquement */}
+      <Modal visible={!isWeb && showLocationPicker} animationType="slide" statusBarTranslucent>
         <View style={styles.pickerContainer}>
           <View style={styles.pickerHeader}>
             <TouchableOpacity onPress={() => setShowLocationPicker(false)}>
@@ -550,12 +641,14 @@ function EditableRow({
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-const BG = '#061425';
-const CARD_BG = '#0E2236';
-const ACCENT = '#00E6B5';
-const TEXT_PRIMARY = '#FFFFFF';
-const TEXT_MUTED = 'rgba(255,255,255,0.5)';
-const BORDER = 'rgba(255,255,255,0.07)';
+import { colors } from '@/lib/theme';
+
+const BG = colors.bg;
+const CARD_BG = colors.surface;
+const ACCENT = colors.accent;
+const TEXT_PRIMARY = colors.textPrimary;
+const TEXT_MUTED = colors.textMuted;
+const BORDER = colors.border;
 
 const styles = StyleSheet.create({
   container: {
@@ -578,26 +671,30 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'ios' ? 56 : 20,
     paddingBottom: 14,
     backgroundColor: BG,
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER,
   },
   backBtn: {
-    paddingVertical: 6,
-    paddingRight: 12,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
   backBtnText: {
     color: ACCENT,
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '600',
   },
   editBtn: {
     paddingHorizontal: 18,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: 'rgba(0,230,181,0.12)',
+    backgroundColor: colors.accentSubtle,
     borderWidth: 1,
     borderColor: ACCENT,
-    minWidth: 90,
+    minWidth: 95,
     alignItems: 'center',
   },
   saveBtn: {
@@ -624,20 +721,23 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   emojiCircle: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: CARD_BG,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: colors.surface2,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: BORDER,
   },
   emojiText: {
-    fontSize: 28,
+    fontSize: 30,
   },
   speciesTitle: {
-    fontSize: 24,
+    fontSize: 26,
     fontWeight: '700',
     color: TEXT_PRIMARY,
+    letterSpacing: -0.4,
   },
   speciesInput: {
     fontSize: 22,
@@ -658,7 +758,7 @@ const styles = StyleSheet.create({
   // Section card
   sectionCard: {
     backgroundColor: CARD_BG,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: BORDER,
     paddingHorizontal: 16,
@@ -670,8 +770,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: ACCENT,
     textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    paddingTop: 10,
+    letterSpacing: 1,
+    paddingTop: 12,
     paddingBottom: 6,
   },
 
@@ -679,48 +779,49 @@ const styles = StyleSheet.create({
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingVertical: 10,
     borderTopWidth: 1,
     borderTopColor: BORDER,
+    gap: 8,
   },
   fieldLabel: {
     fontSize: 14,
     color: TEXT_MUTED,
-    flex: 1,
+    minWidth: 110,
   },
   fieldValueRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flex: 1,
   },
   fieldValue: {
     fontSize: 14,
     color: TEXT_PRIMARY,
-    textAlign: 'right',
     flex: 1,
   },
   autoBadge: {
     fontSize: 10,
     color: ACCENT,
-    backgroundColor: 'rgba(0,230,181,0.1)',
-    paddingHorizontal: 6,
+    backgroundColor: colors.accentSubtle,
+    borderWidth: 1,
+    borderColor: colors.accentGlow,
+    paddingHorizontal: 7,
     paddingVertical: 2,
-    borderRadius: 6,
+    borderRadius: 8,
     overflow: 'hidden',
-    fontWeight: '600',
+    fontWeight: '700',
   },
 
   // Inline input
   inlineInput: {
     flex: 1,
-    textAlign: 'right',
+    textAlign: 'left',
     fontSize: 14,
     color: TEXT_PRIMARY,
     borderBottomWidth: 1,
     borderBottomColor: ACCENT,
     paddingBottom: 2,
-    marginLeft: 12,
   },
 
   // Size chips
@@ -728,7 +829,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
     flexWrap: 'wrap',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
     flex: 1,
     marginLeft: 8,
   },
@@ -786,34 +887,37 @@ const styles = StyleSheet.create({
   cancelBtn: {
     alignItems: 'center',
     paddingVertical: 14,
-    borderRadius: 12,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: colors.borderStrong,
   },
   cancelBtnText: {
     color: TEXT_MUTED,
     fontSize: 15,
+    fontWeight: '500',
   },
   deleteBtn: {
     alignItems: 'center',
     paddingVertical: 14,
   },
   deleteBtnText: {
-    color: '#FF5E5E',
+    color: colors.error,
     fontSize: 14,
+    fontWeight: '500',
   },
   confirmDeleteCard: {
-    backgroundColor: 'rgba(255,94,94,0.08)',
+    backgroundColor: colors.errorSubtle,
     borderWidth: 1,
-    borderColor: 'rgba(255,94,94,0.3)',
-    borderRadius: 14,
+    borderColor: 'rgba(255,94,94,0.25)',
+    borderRadius: 16,
     padding: 16,
     gap: 12,
   },
   confirmDeleteText: {
-    color: '#FF5E5E',
+    color: colors.error,
     fontSize: 14,
     textAlign: 'center',
+    fontWeight: '500',
   },
   confirmDeleteRow: {
     flexDirection: 'row',
@@ -821,27 +925,28 @@ const styles = StyleSheet.create({
   },
   confirmDeleteCancelBtn: {
     flex: 1,
-    paddingVertical: 11,
-    borderRadius: 10,
+    paddingVertical: 12,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: colors.borderStrong,
     alignItems: 'center',
   },
   confirmDeleteCancelText: {
     color: TEXT_MUTED,
     fontSize: 14,
+    fontWeight: '500',
   },
   confirmDeleteConfirmBtn: {
     flex: 1,
-    paddingVertical: 11,
-    borderRadius: 10,
-    backgroundColor: '#FF5E5E',
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: colors.error,
     alignItems: 'center',
   },
   confirmDeleteConfirmText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   gpsPickerBtn: {
     flex: 1,
@@ -908,5 +1013,66 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  // Carte dans la card Lieu (hauteur fixe, évite tous les problèmes de flex web)
+  cardMap: {
+    height: 280,
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  cardMapEditBtn: {
+    position: 'absolute',
+    bottom: 12,
+    left: 12,
+    zIndex: 501,
+    backgroundColor: 'rgba(0,212,170,0.9)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  cardMapEditBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // Thumbnails médias
+  mediaThumbnailRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+  mediaThumbnail: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: colors.surface2,
+  },
+  mediaThumbnailImg: {
+    width: '100%',
+    height: '100%',
+  },
+  videoOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoIcon: {
+    color: '#fff',
+    fontSize: 20,
+  },
+
+  // Section Lieu
+  lieuContent: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
   },
 });

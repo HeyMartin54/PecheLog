@@ -7,6 +7,7 @@ type Coord = { latitude: number; longitude: number };
 type Props = {
   coordinate: Coord;
   onCoordinateChange: (coord: Coord) => void;
+  height?: number;
 };
 
 export default function LocationPickerMap({ coordinate, onCoordinateChange }: Props) {
@@ -46,8 +47,8 @@ export default function LocationPickerMap({ coordinate, onCoordinateChange }: Pr
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  map: { flex: 1 },
+  container: { flex: 1, minHeight: 0, overflow: 'hidden' },
+  map: { flex: 1, minHeight: 0 },
   toggleBtn: {
     position: 'absolute',
     bottom: 14,

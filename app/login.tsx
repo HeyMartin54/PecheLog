@@ -12,12 +12,7 @@ import {
 import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/contexts/AuthContext';
-
-const BG_COLOR = '#0B1A2B';
-const CARD_COLOR = '#122236';
-const ACCENT_COLOR = '#00D4AA';
-const TEXT_PRIMARY = '#EAF0F7';
-const TEXT_SECONDARY = '#8AA4C0';
+import { colors, radius, spacing, typography } from '@/lib/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -28,7 +23,6 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Si la session est déjà active, on redirige vers l'accueil.
   if (!initializing && session) {
     router.replace('/(tabs)');
     return null;
@@ -36,7 +30,6 @@ export default function LoginScreen() {
 
   const handleEmailLogin = async () => {
     if (loading) return;
-
     setErrorMessage(null);
 
     if (!email || !password) {
@@ -57,7 +50,6 @@ export default function LoginScreen() {
   };
 
   const handleFacebookLogin = () => {
-    // TEMPORAIRE : redirection directe vers l'accueil sans auth Facebook.
     setErrorMessage(null);
     router.replace('/(tabs)');
   };
@@ -70,23 +62,28 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.inner}>
+
+        {/* Logo */}
         <View style={styles.logoContainer}>
-          <View style={styles.logo}>
-            <Text style={styles.logoEmoji}>🐟</Text>
+          <View style={styles.logoRing}>
+            <View style={styles.logo}>
+              <Text style={styles.logoEmoji}>🎣</Text>
+            </View>
           </View>
           <Text style={styles.title}>PêcheLog</Text>
           <Text style={styles.subtitle}>Votre journal de pêche intelligent</Text>
         </View>
 
+        {/* Connexion courriel */}
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Connexion par courriel</Text>
+          <Text style={styles.cardTitle}>Connexion</Text>
 
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Courriel</Text>
             <TextInput
               style={styles.input}
-              placeholder="ex: pecheur@exemple.com"
-              placeholderTextColor={TEXT_SECONDARY}
+              placeholder="pecheur@exemple.com"
+              placeholderTextColor={colors.textSubtle}
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
@@ -99,8 +96,8 @@ export default function LoginScreen() {
             <Text style={styles.label}>Mot de passe</Text>
             <TextInput
               style={styles.input}
-              placeholder="Mot de passe"
-              placeholderTextColor={TEXT_SECONDARY}
+              placeholder="••••••••"
+              placeholderTextColor={colors.textSubtle}
               secureTextEntry
               value={password}
               onChangeText={setPassword}
@@ -111,37 +108,46 @@ export default function LoginScreen() {
             style={[styles.primaryButton, isAuthInProgress && styles.disabledButton]}
             onPress={handleEmailLogin}
             disabled={isAuthInProgress}
+            activeOpacity={0.88}
           >
             {isAuthInProgress ? (
-              <ActivityIndicator color={BG_COLOR} />
+              <ActivityIndicator color={colors.bg} />
             ) : (
-              <Text style={styles.primaryButtonText}>Se connecter avec courriel</Text>
+              <Text style={styles.primaryButtonText}>Se connecter</Text>
             )}
           </TouchableOpacity>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Ou</Text>
-
-          <TouchableOpacity
-            style={[styles.facebookButton, isAuthInProgress && styles.disabledButton]}
-            onPress={handleFacebookLogin}
-            disabled={isAuthInProgress}
-          >
-            <View style={styles.buttonIcon}>
-              <Text style={styles.buttonIconText}>f</Text>
-            </View>
-            <Text style={styles.facebookButtonText}>Continuer avec Facebook</Text>
-          </TouchableOpacity>
-
-          <Text style={styles.terms}>
-            En continuant, tu acceptes nos{' '}
-            <Text style={styles.termsLink}>Conditions d’utilisation</Text> et notre{' '}
-            <Text style={styles.termsLink}>Politique de confidentialité</Text>.
-          </Text>
+        {/* Ou — Facebook */}
+        <View style={styles.dividerRow}>
+          <View style={styles.dividerLine} />
+          <Text style={styles.dividerText}>ou</Text>
+          <View style={styles.dividerLine} />
         </View>
 
-        {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
+        <TouchableOpacity
+          style={[styles.facebookButton, isAuthInProgress && styles.disabledButton]}
+          onPress={handleFacebookLogin}
+          disabled={isAuthInProgress}
+          activeOpacity={0.88}
+        >
+          <View style={styles.facebookIcon}>
+            <Text style={styles.facebookIconText}>f</Text>
+          </View>
+          <Text style={styles.facebookButtonText}>Continuer avec Facebook</Text>
+        </TouchableOpacity>
+
+        {errorMessage ? (
+          <View style={styles.errorCard}>
+            <Text style={styles.errorText}>{errorMessage}</Text>
+          </View>
+        ) : null}
+
+        <Text style={styles.terms}>
+          En continuant, tu acceptes nos{' '}
+          <Text style={styles.termsLink}>Conditions d'utilisation</Text> et notre{' '}
+          <Text style={styles.termsLink}>Politique de confidentialité</Text>.
+        </Text>
       </View>
     </KeyboardAvoidingView>
   );
@@ -150,102 +156,144 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: BG_COLOR,
+    backgroundColor: colors.bg,
   },
   inner: {
     flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 80,
-    paddingBottom: 40,
+    paddingHorizontal: spacing.xl,
+    paddingTop: 72,
+    paddingBottom: spacing.xxl,
     justifyContent: 'flex-start',
   },
+
+  // Logo
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: spacing.xxl,
+  },
+  logoRing: {
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+    borderWidth: 1.5,
+    borderColor: colors.accentGlow,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.lg,
+    backgroundColor: colors.accentSubtle,
   },
   logo: {
-    width: 96,
-    height: 96,
-    borderRadius: 28,
-    backgroundColor: ACCENT_COLOR,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    elevation: 8,
   },
   logoEmoji: {
-    fontSize: 48,
+    fontSize: 44,
   },
   title: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: TEXT_PRIMARY,
+    ...typography.h1,
+    color: colors.textPrimary,
+    textAlign: 'center',
   },
   subtitle: {
-    marginTop: 4,
-    fontSize: 14,
-    color: TEXT_SECONDARY,
+    marginTop: 6,
+    ...typography.bodySmall,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
+
+  // Card connexion
   card: {
-    backgroundColor: CARD_COLOR,
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 16,
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    padding: spacing.xl,
     borderWidth: 1,
-    borderColor: 'rgba(138,164,192,0.25)',
+    borderColor: colors.border,
+    gap: spacing.md,
+    marginBottom: spacing.lg,
   },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: TEXT_PRIMARY,
-    marginBottom: 12,
+  cardTitle: {
+    ...typography.h3,
+    color: colors.textPrimary,
   },
   inputGroup: {
-    marginBottom: 12,
+    gap: 6,
   },
   label: {
-    fontSize: 13,
-    color: TEXT_SECONDARY,
-    marginBottom: 4,
+    ...typography.label,
+    color: colors.textMuted,
   },
   input: {
-    borderRadius: 12,
+    borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: 'rgba(138,164,192,0.35)',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: TEXT_PRIMARY,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 13,
+    color: colors.textPrimary,
     fontSize: 15,
-    backgroundColor: '#18263A',
+    backgroundColor: colors.surface2,
   },
   primaryButton: {
-    marginTop: 8,
-    borderRadius: 14,
-    backgroundColor: ACCENT_COLOR,
-    paddingVertical: 14,
+    marginTop: 4,
+    borderRadius: radius.full,
+    backgroundColor: colors.accent,
+    paddingVertical: 15,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 14,
+    elevation: 5,
   },
   primaryButtonText: {
-    color: BG_COLOR,
+    color: colors.bg,
     fontWeight: '700',
-    fontSize: 15,
+    fontSize: 16,
   },
+
+  // Divider
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  dividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+  },
+  dividerText: {
+    ...typography.label,
+    color: colors.textSubtle,
+  },
+
+  // Facebook
   facebookButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
+    borderRadius: radius.full,
     backgroundColor: '#1877F2',
-    paddingVertical: 14,
-    marginTop: 4,
-    gap: 10,
+    paddingVertical: 15,
+    gap: spacing.md,
+    marginBottom: spacing.lg,
   },
   facebookButtonText: {
     color: '#FFFFFF',
     fontWeight: '600',
     fontSize: 15,
   },
-  buttonIcon: {
+  facebookIcon: {
     width: 26,
     height: 26,
     borderRadius: 6,
@@ -253,28 +301,40 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonIconText: {
+  facebookIconText: {
     color: '#1877F2',
     fontWeight: '800',
     fontSize: 16,
   },
-  terms: {
-    marginTop: 12,
-    fontSize: 11,
-    color: TEXT_SECONDARY,
+
+  // Erreur
+  errorCard: {
+    backgroundColor: colors.errorSubtle,
+    borderWidth: 1,
+    borderColor: 'rgba(255,94,94,0.25)',
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.md,
+  },
+  errorText: {
+    color: colors.error,
+    fontSize: 13,
     textAlign: 'center',
+  },
+
+  // Termes
+  terms: {
+    marginTop: spacing.xs,
+    fontSize: 11,
+    color: colors.textSubtle,
+    textAlign: 'center',
+    lineHeight: 17,
   },
   termsLink: {
-    color: ACCENT_COLOR,
-  },
-  error: {
-    marginTop: 8,
-    textAlign: 'center',
-    color: '#FF5A5A',
-    fontSize: 13,
+    color: colors.accent,
   },
   disabledButton: {
-    opacity: 0.7,
+    opacity: 0.65,
   },
 });
-

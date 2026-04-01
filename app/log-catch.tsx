@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -22,6 +22,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/contexts/AuthContext';
 import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { supabase } from '@/lib/supabase';
+
+// ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
+// Nominatim + Overpass : trop lent et peu fiable en production.
+// Pour réactiver : mettre LAKE_NAME_FEATURE = true
+const LAKE_NAME_FEATURE = false;
+// ─────────────────────────────────────────────────────────────────────────────
 
 type SizeMode = 'approx' | 'weight' | 'length';
 type SizeCategory = 'small' | 'medium' | 'large' | 'trophy';
@@ -61,12 +67,14 @@ type OfflineQueuedCatch = {
 
 const OFFLINE_QUEUE_KEY = 'offline_catches_queue_v1';
 
-const BG_COLOR = '#061425';
-const CARD_COLOR = '#0E2236';
-const ACCENT_COLOR = '#00D4AA';
-const TEXT_PRIMARY = '#FFFFFF';
-const TEXT_MUTED = 'rgba(255,255,255,0.6)';
-const BORDER_COLOR = 'rgba(255,255,255,0.08)';
+import { colors } from '@/lib/theme';
+
+const BG_COLOR = colors.bg;
+const CARD_COLOR = colors.surface;
+const ACCENT_COLOR = colors.accent;
+const TEXT_PRIMARY = colors.textPrimary;
+const TEXT_MUTED = colors.textMuted;
+const BORDER_COLOR = colors.border;
 
 async function enqueueOfflineCatch(item: OfflineQueuedCatch) {
   try {
@@ -269,16 +277,17 @@ async function findLakeOverpassBbox(latitude: number, longitude: number): Promis
 
   function pickNearest(data: any): string | null {
     const elements: any[] = data?.elements ?? [];
-    let best: { name: string; dist: number } | null = null;
+    let best: { name: string; distM: number } | null = null;
     for (const el of elements) {
       const name: string | undefined = el?.tags?.name;
       if (!name) continue;
       const lat: number | undefined = el?.center?.lat ?? el?.lat;
       const lon: number | undefined = el?.center?.lon ?? el?.lon;
-      const dist = lat != null && lon != null
-        ? Math.sqrt((lat - latitude) ** 2 + (lon - longitude) ** 2)
-        : Infinity;
-      if (!best || dist < best.dist) best = { name, dist };
+      if (lat == null || lon == null) continue;
+      const latDiff = (lat - latitude) * 111_000;
+      const lonDiff = (lon - longitude) * 111_000 * Math.cos(latitude * (Math.PI / 180));
+      const distM = Math.sqrt(latDiff ** 2 + lonDiff ** 2);
+      if (!best || distM < best.distM) best = { name, distM };
     }
     return best?.name ?? null;
   }
@@ -402,14 +411,17 @@ export default function LogCatchScreen() {
 
   // Auto-captured
   const [coords, setCoords] = useState<Location.LocationObject | null>(null);
-  const [lakeName, setLakeName] = useState<string | null>(null);
-  const [lakeLoading, setLakeLoading] = useState(false);
+  const [lakeName, setLakeName] = useState<string | null>(null);       // inutilisé si LAKE_NAME_FEATURE = false
+  // lakeLoading : conservé pour réactivation, toujours false quand LAKE_NAME_FEATURE = false
+  const lakeLoading = false;
   const [temperatureC, setTemperatureC] = useState<number | null>(null);
   const [windSpeedKmh, setWindSpeedKmh] = useState<number | null>(null);
   const [windDirectionDeg, setWindDirectionDeg] = useState<number | null>(null);
   const [weatherConditions, setWeatherConditions] = useState<string | null>(null);
   const [weatherConditionsIcon, setWeatherConditionsIcon] = useState<string>('🌡');
   const [speedKmh, setSpeedKmh] = useState<number | null>(null);
+  const [speedInput, setSpeedInput] = useState('');       // valeur affichée (GPS pré-rempli, éditable)
+  const [speedModified, setSpeedModified] = useState(false); // true si l'utilisateur a modifié
   const [autoLoading, setAutoLoading] = useState(true);
 
   // Manual fields
@@ -485,17 +497,22 @@ export default function LogCatchScreen() {
         setCoords(loc);
 
         const speed = typeof loc.coords.speed === 'number' ? loc.coords.speed : null;
-        setSpeedKmh(speed != null ? speed * 3.6 : null);
+        const computedSpeed = speed != null ? speed * 3.6 : null;
+        setSpeedKmh(computedSpeed);
+        // Pré-remplir le champ vitesse depuis le GPS seulement si l'utilisateur n'a pas déjà saisi
+        if (computedSpeed != null) {
+          setSpeedInput((prev) => (prev === '' ? computedSpeed.toFixed(1) : prev));
+        }
 
-        setLakeLoading(true);
         const [lake, weather] = await Promise.all([
-          reverseGeocodeLakeName(loc.coords.latitude, loc.coords.longitude),
+          LAKE_NAME_FEATURE
+            ? reverseGeocodeLakeName(loc.coords.latitude, loc.coords.longitude)
+            : Promise.resolve(null),
           fetchWeatherFromOpenWeather(loc.coords.latitude, loc.coords.longitude),
         ]);
 
         if (!isMounted) return;
-        setLakeLoading(false);
-        setLakeName(lake);
+        if (LAKE_NAME_FEATURE) setLakeName(lake);
         if (weather) {
           setTemperatureC(weather.tempC);
           setWindSpeedKmh(weather.windKmh);
@@ -558,24 +575,19 @@ export default function LogCatchScreen() {
     loadPreferences();
   }, [user?.id]);
 
-  const now = useMemo(() => new Date(), []);
+  // Date et heure de la prise (éditables)
+  const [catchDate, setCatchDate] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const [catchTime, setCatchTime] = useState(() => {
+    const d = new Date();
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  });
 
-  const formattedTime = useMemo(() => {
-    return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }, [now]);
+  // "Site prometteur" : aucun poisson — masque météo, leurre, grosseur, photos
+  const isSitePrometteur = selectedSpecies === 'Site prometteur';
 
-  const formattedDate = useMemo(() => {
-    return now.toLocaleDateString('fr-CA', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
-  }, [now]);
-
-  const speedBadgeValue = useMemo(() => {
-    if (speedKmh == null) return null;
-    return `${speedKmh.toFixed(1)} km/h`;
-  }, [speedKmh]);
 
   const handleOpenLocationPicker = () => {
     const initial = effectiveCoords;
@@ -588,14 +600,13 @@ export default function LogCatchScreen() {
     if (!pickerCoord) return;
     setShowLocationPicker(false);
     setManualLocation(pickerCoord);
-    setLakeName(null);
-    setLakeLoading(true);
     const [lake, weather] = await Promise.all([
-      reverseGeocodeLakeName(pickerCoord.latitude, pickerCoord.longitude),
+      LAKE_NAME_FEATURE
+        ? reverseGeocodeLakeName(pickerCoord.latitude, pickerCoord.longitude)
+        : Promise.resolve(null),
       fetchWeatherFromOpenWeather(pickerCoord.latitude, pickerCoord.longitude),
     ]);
-    setLakeLoading(false);
-    setLakeName(lake);
+    if (LAKE_NAME_FEATURE) setLakeName(lake);
     if (weather) {
       setTemperatureC(weather.tempC);
       setWindSpeedKmh(weather.windKmh);
@@ -612,29 +623,25 @@ export default function LogCatchScreen() {
     }
   };
 
-  const handlePickMedia = async (type: 'photo' | 'video') => {
+  const handlePickMedia = async () => {
     try {
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permissionResult.granted) {
-        Alert.alert(
-          'Permissions',
-          "Impossible d'accéder à ta galerie sans la permission de lecture.",
-        );
+        Alert.alert('Permissions', "Impossible d'accéder à ta galerie sans la permission de lecture.");
         return;
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: type === 'photo' ? 'images' : 'videos',
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
         quality: 0.8,
       });
 
-      if (result.canceled || !result.assets || result.assets.length === 0) {
-        return;
-      }
+      if (result.canceled || !result.assets || result.assets.length === 0) return;
 
       const asset = result.assets[0];
       if (!asset.uri) return;
 
+      const type: 'photo' | 'video' = asset.type === 'video' ? 'video' : 'photo';
       setMedia((prev) => [...prev, { uri: asset.uri, type }]);
     } catch (error) {
       console.warn('[Media] Erreur lors de la sélection', error);
@@ -657,8 +664,9 @@ export default function LogCatchScreen() {
       return;
     }
 
-    const depthValue =
+    const depthFeet =
       depthMeters.trim().length > 0 ? Number.parseFloat(depthMeters.replace(',', '.')) : null;
+    const depthValue = depthFeet != null ? depthFeet * 0.3048 : null; // converti pieds → mètres
     const weightValue =
       weightLbs.trim().length > 0 ? Number.parseFloat(weightLbs.replace(',', '.')) : null;
     const lengthValue =
@@ -671,22 +679,25 @@ export default function LogCatchScreen() {
       user_id: effectiveUserId,
       map_id: null, // TODO: brancher sur la carte sélectionnée (personnelle / partagée)
       species: selectedSpecies,
-      lure: selectedLure,
+      lure: isSitePrometteur ? null : selectedLure,
       latitude: effectiveCoords.latitude,
       longitude: effectiveCoords.longitude,
-      lake_name: lakeName,
+      lake_name: LAKE_NAME_FEATURE ? lakeName : null,
       depth_meters: depthValue,
       depth_source: depthValue != null ? 'manual' : sonarDepthMeters != null ? 'sonar' : null,
-      temperature_c: temperatureC,
-      wind_speed_kmh: windSpeedKmh,
-      wind_direction_deg: windDirectionDeg,
-      speed_kmh: speedKmh,
-      weather_conditions: weatherConditions,
-      size_category: sizeCategoryValue,
-      weight_lbs: sizeMode === 'weight' ? weightValue : null,
-      length_inches: sizeMode === 'length' ? lengthValue : null,
+      temperature_c: isSitePrometteur ? null : temperatureC,
+      wind_speed_kmh: isSitePrometteur ? null : windSpeedKmh,
+      wind_direction_deg: isSitePrometteur ? null : windDirectionDeg,
+      speed_kmh: speedInput.trim() ? Number.parseFloat(speedInput.replace(',', '.')) : speedKmh,
+      weather_conditions: isSitePrometteur ? null : weatherConditions,
+      size_category: isSitePrometteur ? null : sizeCategoryValue,
+      weight_lbs: isSitePrometteur ? null : (sizeMode === 'weight' ? weightValue : null),
+      length_inches: isSitePrometteur ? null : (sizeMode === 'length' ? lengthValue : null),
       notes: notes.trim().length > 0 ? notes.trim() : null,
-      caught_at: new Date().toISOString(),
+      caught_at: (() => {
+        try { return new Date(`${catchDate}T${catchTime}:00`).toISOString(); }
+        catch { return new Date().toISOString(); }
+      })(),
       local_id: `local_${Date.now()}`,
     };
 
@@ -733,12 +744,7 @@ export default function LogCatchScreen() {
           style={styles.backButton}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <View>
-            {/* Simple flèche retour stylée */}
-            <View>
-              <AutoFieldText style={styles.backButtonText}>{'←'}</AutoFieldText>
-            </View>
-          </View>
+          <Text style={styles.backButtonText}>←</Text>
         </TouchableOpacity>
         <AutoFieldText style={styles.headerTitle}>Nouvelle prise</AutoFieldText>
       </View>
@@ -755,64 +761,109 @@ export default function LogCatchScreen() {
           {autoLoading && !hasLocation && (
             <View style={styles.autoLoadingRow}>
               <ActivityIndicator size="small" color={ACCENT_COLOR} />
-              <AutoFieldText style={styles.autoLoadingText}>
-                Récupération de ta position…
-              </AutoFieldText>
+              <AutoFieldText style={styles.autoLoadingText}>Récupération de ta position…</AutoFieldText>
             </View>
           )}
 
-          {hasLocation && (
-            <StaticMapView
-              key={`${effectiveCoords!.latitude.toFixed(5)},${effectiveCoords!.longitude.toFixed(5)}`}
-              coordinate={effectiveCoords!}
-              height={180}
-              onPress={handleOpenLocationPicker}
-            />
-          )}
+          <View style={styles.emplacementRow}>
+            {/* Colonne gauche : badges GPS + date/heure éditables */}
+            <View style={styles.emplacementLeft}>
+              {LAKE_NAME_FEATURE && (
+                <Text style={styles.lakeNameTitle}>
+                  {lakeLoading || autoLoading ? '🏔  Récupération du lac…' : lakeName ?? '🏔  Lac inconnu'}
+                </Text>
+              )}
 
-          <Text style={styles.lakeNameTitle}>
-            {lakeLoading || autoLoading
-              ? '🏔  Récupération du lac…'
-              : lakeName ?? '🏔  Lac inconnu'}
-          </Text>
+              <AutoFieldBadge
+                icon="📍"
+                value={hasLocation ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}` : 'GPS…'}
+                onPress={hasLocation ? handleOpenLocationPicker : undefined}
+                modified={!!manualLocation}
+              />
 
-          <View style={styles.autoFieldsRow}>
-            <AutoFieldBadge
-              icon="📍"
-              value={hasLocation ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}` : 'GPS…'}
-              onPress={hasLocation ? handleOpenLocationPicker : undefined}
-              modified={!!manualLocation}
-            />
-            <AutoFieldBadge icon="📅" value={formattedDate} />
-            <AutoFieldBadge icon="🕐" value={formattedTime} />
-            {speedBadgeValue && <AutoFieldBadge icon="🚤" value={speedBadgeValue} />}
+              {/* Date éditable */}
+              <View style={[styles.autoField, styles.autoFieldAuto, { marginTop: 8 }]}>
+                <Text style={styles.badgeIconText}>📅</Text>
+                <TextInput
+                  style={styles.badgeTextInput}
+                  value={catchDate}
+                  onChangeText={setCatchDate}
+                  placeholder="AAAA-MM-JJ"
+                  placeholderTextColor={TEXT_MUTED}
+                />
+              </View>
+
+              {/* Heure éditable */}
+              <View style={[styles.autoField, styles.autoFieldAuto, { marginTop: 8 }]}>
+                <Text style={styles.badgeIconText}>🕐</Text>
+                <TextInput
+                  style={styles.badgeTextInput}
+                  value={catchTime}
+                  onChangeText={setCatchTime}
+                  placeholder="HH:MM"
+                  placeholderTextColor={TEXT_MUTED}
+                />
+              </View>
+
+              {/* Vitesse — pré-remplie par GPS, éditable manuellement */}
+              <View style={[
+                styles.autoField,
+                speedModified ? styles.autoFieldModified : styles.autoFieldAuto,
+                { marginTop: 8 },
+              ]}>
+                <Text style={styles.badgeIconText}>🚤</Text>
+                <TextInput
+                  style={styles.badgeTextInput}
+                  value={speedInput}
+                  onChangeText={(v) => { setSpeedInput(v); setSpeedModified(true); }}
+                  placeholder={autoLoading ? 'GPS…' : '— km/h'}
+                  placeholderTextColor={TEXT_MUTED}
+                  keyboardType="decimal-pad"
+                />
+                <Text style={[styles.badgeIconText, { marginLeft: 2, marginRight: 0 }]}>km/h</Text>
+              </View>
+            </View>
+
+            {/* Colonne droite : miniature de la carte */}
+            {hasLocation && (
+              <View style={styles.emplacementRight}>
+                <StaticMapView
+                  key={`${effectiveCoords!.latitude.toFixed(5)},${effectiveCoords!.longitude.toFixed(5)}`}
+                  coordinate={effectiveCoords!}
+                  height={225}
+                  onPress={handleOpenLocationPicker}
+                />
+              </View>
+            )}
           </View>
         </View>
 
-        {/* Section Météo */}
-        <View style={styles.section}>
-          <SectionTitle>🌤 Météo</SectionTitle>
-          <View style={styles.autoFieldsRow}>
-            <AutoFieldBadge
-              icon={weatherConditionsIcon}
-              value={weatherConditions ?? (autoLoading ? 'Météo…' : '—')}
-            />
-            <AutoFieldBadge
-              icon="🌡"
-              value={temperatureC != null ? `${temperatureC.toFixed(1)} °C` : (autoLoading ? 'Météo…' : '—')}
-            />
-            <AutoFieldBadge
-              icon="💨"
-              value={
-                windSpeedKmh != null
-                  ? windDirectionDeg != null
-                    ? `${windDegToCompass(windDirectionDeg)} ${windSpeedKmh.toFixed(0)} km/h`
-                    : `${windSpeedKmh.toFixed(0)} km/h`
-                  : autoLoading ? 'Météo…' : '—'
-              }
-            />
+        {/* Section Météo — masquée pour "Site prometteur" */}
+        {!isSitePrometteur && (
+          <View style={styles.section}>
+            <SectionTitle>🌤 Météo</SectionTitle>
+            <View style={styles.autoFieldsRow}>
+              <AutoFieldBadge
+                icon={weatherConditionsIcon}
+                value={weatherConditions ?? (autoLoading ? 'Météo…' : '—')}
+              />
+              <AutoFieldBadge
+                icon="🌡"
+                value={temperatureC != null ? `${temperatureC.toFixed(1)} °C` : (autoLoading ? 'Météo…' : '—')}
+              />
+              <AutoFieldBadge
+                icon="💨"
+                value={
+                  windSpeedKmh != null
+                    ? windDirectionDeg != null
+                      ? `${windDegToCompass(windDirectionDeg)} ${windSpeedKmh.toFixed(0)} km/h`
+                      : `${windSpeedKmh.toFixed(0)} km/h`
+                    : autoLoading ? 'Météo…' : '—'
+                }
+              />
+            </View>
           </View>
-        </View>
+        )}
 
         {/* Species */}
         <View style={styles.section}>
@@ -829,20 +880,22 @@ export default function LogCatchScreen() {
           </View>
         </View>
 
-        {/* Lure */}
-        <View style={styles.section}>
-          <SectionTitle>🪝 Leurre</SectionTitle>
-          <View style={styles.chipRow}>
-            {lureOptions.map((lure) => (
-              <Chip
-                key={lure}
-                label={lure}
-                selected={selectedLure === lure}
-                onPress={() => setSelectedLure(lure)}
-              />
-            ))}
+        {/* Leurre — masqué pour "Site prometteur" */}
+        {!isSitePrometteur && (
+          <View style={styles.section}>
+            <SectionTitle>🪝 Leurre</SectionTitle>
+            <View style={styles.chipRow}>
+              {lureOptions.map((lure) => (
+                <Chip
+                  key={lure}
+                  label={lure}
+                  selected={selectedLure === lure}
+                  onPress={() => setSelectedLure(lure)}
+                />
+              ))}
+            </View>
           </View>
-        </View>
+        )}
 
         {/* Depth */}
         <View style={styles.section}>
@@ -854,16 +907,16 @@ export default function LogCatchScreen() {
                 <AutoFieldText style={styles.autoFieldIcon}>📡</AutoFieldText>
                 <AutoFieldText style={styles.autoFieldLabel}>Sonar:</AutoFieldText>
                 <AutoFieldText style={styles.autoFieldValue}>
-                  {sonarDepthMeters.toFixed(1)} m
+                  {(sonarDepthMeters * 3.28084).toFixed(1)} pi
                 </AutoFieldText>
               </View>
             </View>
           )}
 
-          <View style={styles.inputGroup}>
+          <View style={[styles.inputGroup, { maxWidth: 260 }]}>
             <TextInput
               style={styles.input}
-              placeholder="Corriger manuellement (ex: 5.5m)"
+              placeholder="Profondeur en pieds (ex: 18)"
               placeholderTextColor={TEXT_MUTED}
               keyboardType="decimal-pad"
               value={depthMeters}
@@ -872,8 +925,8 @@ export default function LogCatchScreen() {
           </View>
         </View>
 
-        {/* Size */}
-        <View style={styles.section}>
+        {/* Grosseur — masquée pour "Site prometteur" */}
+        {!isSitePrometteur && <View style={styles.section}>
           <SectionTitle>📐 Grosseur</SectionTitle>
 
           <View style={styles.sizeToggleRow}>
@@ -944,36 +997,39 @@ export default function LogCatchScreen() {
               />
             </View>
           )}
-        </View>
+        </View>}
 
-        {/* Photos / Vidéos */}
-        <View style={styles.section}>
-          <SectionTitle>📸 Photos / Vidéos</SectionTitle>
-          <View style={styles.photoRow}>
-            <PhotoSlot label="Photo" icon="📷" onPress={() => handlePickMedia('photo')} />
-            <PhotoSlot label="Vidéo" icon="🎥" onPress={() => handlePickMedia('video')} />
-            <PhotoSlot label="Ajouter" icon="➕" onPress={() => handlePickMedia('photo')} />
+        {/* Photos / Vidéos — masquées pour "Site prometteur" */}
+        {!isSitePrometteur && (
+          <View style={styles.section}>
+            <SectionTitle>📸 Photos / Vidéos</SectionTitle>
+            <TouchableOpacity style={styles.mediaButton} onPress={handlePickMedia} activeOpacity={0.85}>
+              <Text style={{ fontSize: 22 }}>📸</Text>
+              <Text style={styles.mediaButtonText}>Ajouter photos / vidéos</Text>
+            </TouchableOpacity>
           </View>
-        </View>
+        )}
 
-        {/* Map selection */}
-        <View style={styles.section}>
-          <SectionTitle>🗺 Ajouter à quelle carte</SectionTitle>
-          <View style={styles.mapSelector}>
-            <MapOptionCard
-              title="📌 Ma carte personnelle"
-              description="Visible uniquement par vous"
-              selected={selectedMapOption === 'personal'}
-              onPress={() => setSelectedMapOption('personal')}
-            />
-            <MapOptionCard
-              title="🤝 Carte partagée"
-              description="Partagée avec vos partenaires de pêche"
-              selected={selectedMapOption === 'shared'}
-              onPress={() => setSelectedMapOption('shared')}
-            />
+        {/* Assignation de carte — désactivée, à réactiver plus tard */}
+        {false && (
+          <View style={styles.section}>
+            <SectionTitle>🗺 Ajouter à quelle carte</SectionTitle>
+            <View style={styles.mapSelector}>
+              <MapOptionCard
+                title="📌 Ma carte personnelle"
+                description="Visible uniquement par vous"
+                selected={selectedMapOption === 'personal'}
+                onPress={() => setSelectedMapOption('personal')}
+              />
+              <MapOptionCard
+                title="🤝 Carte partagée"
+                description="Partagée avec vos partenaires de pêche"
+                selected={selectedMapOption === 'shared'}
+                onPress={() => setSelectedMapOption('shared')}
+              />
+            </View>
           </View>
-        </View>
+        )}
 
         {/* Notes */}
         <View style={styles.section}>
@@ -1126,20 +1182,6 @@ function MapOptionCard({ title, description, selected, onPress }: MapOptionCardP
   );
 }
 
-type PhotoSlotProps = {
-  label: string;
-  icon: string;
-  onPress: () => void;
-};
-
-function PhotoSlot({ label, icon, onPress }: PhotoSlotProps) {
-  return (
-    <TouchableOpacity style={styles.photoSlot} onPress={onPress} activeOpacity={0.9}>
-      <AutoFieldText style={styles.photoSlotIcon}>{icon}</AutoFieldText>
-      <AutoFieldText style={styles.photoSlotText}>{label}</AutoFieldText>
-    </TouchableOpacity>
-  );
-}
 
 type AutoFieldTextProps = {
   children: React.ReactNode;
@@ -1202,69 +1244,76 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 50 : 24,
-    paddingBottom: 12,
+    paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER_COLOR,
     backgroundColor: BG_COLOR,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
   },
   backButtonText: {
-    fontSize: 18,
+    fontSize: 17,
     color: TEXT_PRIMARY,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
     color: TEXT_PRIMARY,
+    letterSpacing: -0.2,
   },
   scroll: {
     flex: 1,
   },
   scrollContent: {
-    paddingTop: 16,
-    paddingBottom: 96,
+    paddingTop: 20,
+    paddingBottom: 100,
   },
   section: {
-    paddingHorizontal: 24,
-    marginBottom: 20,
+    paddingHorizontal: 20,
+    marginBottom: 24,
   },
   sectionTitleText: {
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 1,
-    color: TEXT_MUTED,
-    marginBottom: 10,
-    fontWeight: '600',
+    color: ACCENT_COLOR,
+    marginBottom: 12,
+    fontWeight: '700',
   },
   autoFieldsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 6,
+    marginBottom: 8,
   },
   autoField: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     borderRadius: 20,
     backgroundColor: CARD_COLOR,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
   },
   autoFieldAuto: {
-    borderColor: 'rgba(0,212,170,0.3)',
+    borderColor: colors.accentGlow,
+    backgroundColor: colors.accentSubtle,
   },
   autoFieldIcon: {
-    fontSize: 14,
-    marginRight: 4,
+    fontSize: 13,
+    marginRight: 5,
+    width: 22,
+    flexShrink: 0,
   },
   autoFieldLabel: {
     fontSize: 11,
@@ -1272,8 +1321,8 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   autoFieldValue: {
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '600',
     color: ACCENT_COLOR,
   },
   autoLoadingRow: {
@@ -1287,47 +1336,98 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
   },
   lakeNameTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '700',
     color: TEXT_PRIMARY,
-    marginBottom: 10,
+    marginBottom: 12,
+    letterSpacing: -0.3,
   },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
   },
+  // ── Emplacement 2 colonnes ───────────────────────────────────────────────────
+  emplacementRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  emplacementLeft: {
+    flex: 1,
+    maxWidth: 310,
+  },
+  emplacementRight: {
+    width: 225,
+    maxWidth: 225,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  badgeIconText: {
+    fontSize: 13,
+    marginRight: 5,
+  },
+  badgeTextInput: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: ACCENT_COLOR,
+    flex: 1,
+    padding: 0,
+  },
+  // ── Bouton média unique ──────────────────────────────────────────────────────
+  mediaButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    borderStyle: 'dashed',
+    backgroundColor: CARD_COLOR,
+    maxWidth: 360,
+    alignSelf: 'flex-start',
+  },
+  mediaButtonText: {
+    fontSize: 14,
+    color: TEXT_MUTED,
+    fontWeight: '500',
+  },
+  // ── Chips ────────────────────────────────────────────────────────────────────
   chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
     backgroundColor: CARD_COLOR,
+    maxWidth: 180,
   },
   chipSelected: {
     borderColor: ACCENT_COLOR,
-    backgroundColor: 'rgba(0,212,170,0.12)',
+    backgroundColor: colors.accentSubtle,
   },
   chipText: {
     fontSize: 13,
     color: TEXT_MUTED,
+    fontWeight: '500',
   },
   chipTextSelected: {
     color: ACCENT_COLOR,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   inputGroup: {
     marginBottom: 14,
   },
   input: {
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
     backgroundColor: CARD_COLOR,
-    paddingHorizontal: 14,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
-    fontSize: 14,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 13 : 10,
+    fontSize: 15,
     color: TEXT_PRIMARY,
   },
   notesInput: {
@@ -1341,7 +1441,8 @@ const styles = StyleSheet.create({
   },
   sizeToggleButton: {
     flex: 1,
-    paddingVertical: 8,
+    maxWidth: 160,
+    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
@@ -1351,15 +1452,16 @@ const styles = StyleSheet.create({
   },
   sizeToggleButtonActive: {
     borderColor: ACCENT_COLOR,
-    backgroundColor: 'rgba(0,212,170,0.16)',
+    backgroundColor: colors.accentSubtle,
   },
   sizeToggleButtonText: {
     fontSize: 12,
     color: TEXT_MUTED,
+    fontWeight: '500',
   },
   sizeToggleButtonTextActive: {
     color: ACCENT_COLOR,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   photoRow: {
     flexDirection: 'row',
@@ -1370,19 +1472,21 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 14,
+    paddingVertical: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
+    borderStyle: 'dashed',
     backgroundColor: CARD_COLOR,
   },
   photoSlotIcon: {
-    fontSize: 20,
-    marginBottom: 4,
+    fontSize: 22,
+    marginBottom: 6,
   },
   photoSlotText: {
-    fontSize: 13,
+    fontSize: 12,
     color: TEXT_MUTED,
+    fontWeight: '500',
   },
   mapSelector: {
     gap: 10,
@@ -1390,15 +1494,16 @@ const styles = StyleSheet.create({
   mapOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
     backgroundColor: CARD_COLOR,
   },
   mapOptionSelected: {
     borderColor: ACCENT_COLOR,
+    backgroundColor: colors.accentSubtle,
   },
   mapRadio: {
     width: 18,
@@ -1406,17 +1511,18 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     borderWidth: 2,
     borderColor: TEXT_MUTED,
-    marginRight: 10,
+    marginRight: 12,
   },
   mapRadioSelected: {
     borderColor: ACCENT_COLOR,
-    backgroundColor: 'rgba(0,212,170,0.2)',
+    backgroundColor: colors.accentStrong,
   },
   mapInfo: {
     flex: 1,
   },
   mapTitle: {
     fontSize: 14,
+    fontWeight: '600',
     color: TEXT_PRIMARY,
     marginBottom: 2,
   },
@@ -1431,33 +1537,34 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 16,
     right: 16,
-    bottom: Platform.OS === 'ios' ? 24 : 16,
-    paddingVertical: 14,
+    bottom: Platform.OS === 'ios' ? 28 : 16,
+    paddingVertical: 16,
     borderRadius: 999,
     backgroundColor: ACCENT_COLOR,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#00D4AA',
+    shadowColor: colors.accent,
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 18,
-    elevation: 6,
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 8,
   },
   saveButtonDisabled: {
-    opacity: 0.7,
+    opacity: 0.65,
   },
   saveButtonText: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#0B1A2B',
+    color: colors.bg,
   },
 
   // Auto-field badge: modified state
   autoFieldModified: {
-    borderColor: '#FFB347',
+    borderColor: colors.warning,
+    backgroundColor: colors.warningSubtle,
   },
   autoFieldEditIcon: {
-    fontSize: 11,
+    fontSize: 10,
     marginLeft: 4,
   },
 
@@ -1472,7 +1579,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 18,
     paddingTop: Platform.OS === 'ios' ? 56 : 28,
-    paddingBottom: 12,
+    paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER_COLOR,
   },
@@ -1511,15 +1618,17 @@ const styles = StyleSheet.create({
   },
   pickerResetBtn: {
     alignSelf: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 16,
+    paddingVertical: 7,
+    paddingHorizontal: 18,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#FFB347',
+    borderColor: colors.warning,
+    backgroundColor: colors.warningSubtle,
   },
   pickerResetText: {
     fontSize: 13,
-    color: '#FFB347',
+    color: colors.warning,
+    fontWeight: '500',
   },
 
 });

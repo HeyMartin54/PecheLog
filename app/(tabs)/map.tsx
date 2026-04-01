@@ -16,6 +16,8 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { supabase } from '@/lib/supabase';
+import { colors } from '@/lib/theme';
+import { getSpeciesColor } from '@/lib/species';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -46,23 +48,10 @@ const EMPTY_FILTERS: FilterState = { species: [], lures: [], dateFrom: null, dat
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
-const SPECIES_COLORS: Record<string, string> = {
-  doré: '#FFD700',
-  brochet: '#2ECC71',
-  truite: '#3498DB',
-  touladi: '#9E9E9E',
-  site: '#FFFFFF',
-};
-
 const WEATHER_OPTIONS = ['☀️ Ensoleillé', '⛅ Nuageux', '🌧️ Pluie', '💨 Vent', '❄️ Froid'];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getSpeciesColor(species: string): string {
-  const lower = species.toLowerCase();
-  const key = Object.keys(SPECIES_COLORS).find((k) => lower.includes(k));
-  return key ? SPECIES_COLORS[key] : '#AAAAAA';
-}
 
 function formatDateFr(iso: string): string {
   return new Date(iso).toLocaleDateString('fr-CA', {
@@ -457,29 +446,28 @@ export default function MapScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const ACCENT = '#00E6B5';
-const CARD_BG = '#0E2236';
-const BG = '#061425';
+const ACCENT = colors.accent;
+const CARD_BG = colors.surface;
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
 
   pin: {
-    width: 38, height: 38, borderRadius: 19,
+    width: 36, height: 36, borderRadius: 18,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2.5, borderColor: '#fff',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.45, shadowRadius: 4, elevation: 5,
+    borderWidth: 2.5, borderColor: 'rgba(255,255,255,0.9)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.5, shadowRadius: 5, elevation: 6,
   },
-  pinEmoji: { fontSize: 18 },
+  pinEmoji: { fontSize: 17 },
 
-  calloutWrapper: { width: 190 },
-  callout: { padding: 8 },
-  calloutSpecies: { fontSize: 15, fontWeight: '700', color: '#111', marginBottom: 5 },
-  calloutRow: { fontSize: 12, color: '#444', marginBottom: 2 },
-  calloutDate: { marginTop: 5, fontSize: 11, color: '#888' },
-  calloutLink: { marginTop: 6, fontSize: 12, color: '#007AFF', fontWeight: '600' },
+  calloutWrapper: { width: 200 },
+  callout: { padding: 10 },
+  calloutSpecies: { fontSize: 15, fontWeight: '700', color: '#0D1E2F', marginBottom: 5 },
+  calloutRow: { fontSize: 12, color: '#3A5068', marginBottom: 3 },
+  calloutDate: { marginTop: 4, fontSize: 11, color: '#6B8BA4' },
+  calloutLink: { marginTop: 7, fontSize: 12, color: colors.accent, fontWeight: '700' },
 
   // ── Barre de filtres ──
   filterBar: {
@@ -490,119 +478,119 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   filterScroll: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 8,
     flexDirection: 'row',
   },
   filterBtn: {
-    paddingHorizontal: 13,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: 'rgba(6,20,37,0.9)',
+    backgroundColor: 'rgba(6,15,26,0.92)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.16)',
   },
   filterBtnActive: {
-    backgroundColor: 'rgba(0,230,181,0.15)',
+    backgroundColor: colors.accentSubtle,
     borderColor: ACCENT,
   },
   filterBtnText: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.75)',
+    color: 'rgba(255,255,255,0.72)',
     fontWeight: '500',
   },
   filterBtnTextActive: {
     color: ACCENT,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   resetBtn: {
-    paddingHorizontal: 13,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: 'rgba(231,76,60,0.15)',
+    backgroundColor: colors.errorSubtle,
     borderWidth: 1,
-    borderColor: '#E74C3C',
+    borderColor: colors.error,
   },
   resetBtnText: {
     fontSize: 12,
-    color: '#E74C3C',
+    color: colors.error,
     fontWeight: '600',
   },
 
   // ── Panneau d'options ──
   panel: {
-    backgroundColor: 'rgba(6,20,37,0.97)',
-    borderBottomLeftRadius: 16,
-    borderBottomRightRadius: 16,
+    backgroundColor: 'rgba(6,15,26,0.97)',
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
     borderTopWidth: 0,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    paddingBottom: 14,
+    borderColor: colors.border,
+    paddingBottom: 16,
   },
-  panelSection: { paddingHorizontal: 14, paddingTop: 12 },
+  panelSection: { paddingHorizontal: 16, paddingTop: 12 },
   panelTitle: {
     fontSize: 11,
     fontWeight: '700',
-    color: 'rgba(255,255,255,0.45)',
+    color: ACCENT,
     textTransform: 'uppercase',
-    letterSpacing: 0.8,
+    letterSpacing: 1,
     marginBottom: 10,
   },
   panelChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  panelEmpty: { fontSize: 13, color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' },
+  panelEmpty: { fontSize: 13, color: colors.textSubtle, fontStyle: 'italic' },
   pChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: colors.border,
   },
   pChipActive: {
-    backgroundColor: 'rgba(0,230,181,0.12)',
+    backgroundColor: colors.accentSubtle,
     borderColor: ACCENT,
   },
   pChipDot: { width: 8, height: 8, borderRadius: 4 },
-  pChipText: { fontSize: 13, color: 'rgba(255,255,255,0.7)', fontWeight: '500' },
-  pChipTextActive: { color: ACCENT, fontWeight: '600' },
+  pChipText: { fontSize: 13, color: colors.textMuted, fontWeight: '500' },
+  pChipTextActive: { color: ACCENT, fontWeight: '700' },
 
   // ── Résultats ──
   resultBadge: {
     position: 'absolute',
-    bottom: 80,
+    bottom: 84,
     alignSelf: 'center',
-    backgroundColor: 'rgba(6,20,37,0.9)',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
+    backgroundColor: 'rgba(6,15,26,0.92)',
+    paddingHorizontal: 16,
+    paddingVertical: 7,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: ACCENT,
   },
-  resultBadgeText: { fontSize: 12, color: ACCENT, fontWeight: '600' },
+  resultBadgeText: { fontSize: 12, color: ACCENT, fontWeight: '700' },
 
   // ── Satellite ──
   satelliteBtn: {
     position: 'absolute',
-    bottom: 24,
+    bottom: 28,
     right: 14,
     zIndex: 5,
-    backgroundColor: 'rgba(6,20,37,0.88)',
+    backgroundColor: 'rgba(6,15,26,0.9)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
+    borderColor: colors.borderStrong,
     borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
   },
-  satelliteBtnText: { color: '#fff', fontSize: 13, fontWeight: '500' },
+  satelliteBtnText: { color: colors.textPrimary, fontSize: 13, fontWeight: '600' },
 
   // ── Loading ──
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(6,20,37,0.45)',
+    backgroundColor: 'rgba(6,15,26,0.5)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -610,17 +598,23 @@ const styles = StyleSheet.create({
   // ── Empty ──
   emptyCard: {
     position: 'absolute',
-    bottom: 36,
-    left: 24,
-    right: 24,
+    bottom: 40,
+    left: 20,
+    right: 20,
     backgroundColor: CARD_BG,
-    borderRadius: 14,
-    padding: 18,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 20,
     alignItems: 'center',
-    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  emptyTitle: { fontSize: 15, fontWeight: '600', color: '#fff', marginBottom: 5 },
-  emptySubtitle: { fontSize: 13, color: 'rgba(255,255,255,0.55)', textAlign: 'center', lineHeight: 19 },
+  emptyTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: 6 },
+  emptySubtitle: { fontSize: 13, color: colors.textMuted, textAlign: 'center', lineHeight: 19 },
 
   // ── Dismiss overlay ──
   dismissOverlay: {
@@ -637,21 +631,21 @@ const styles = StyleSheet.create({
   },
   dateBtn: {
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingVertical: 9,
     borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: colors.border,
     alignItems: 'center',
     minWidth: 90,
   },
   dateBtnActive: {
-    backgroundColor: 'rgba(0,230,181,0.12)',
+    backgroundColor: colors.accentSubtle,
     borderColor: ACCENT,
   },
   dateBtnLabel: {
     fontSize: 10,
-    color: 'rgba(255,255,255,0.4)',
+    color: colors.textSubtle,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
     marginBottom: 2,
@@ -659,28 +653,28 @@ const styles = StyleSheet.create({
   dateBtnValue: {
     fontSize: 13,
     fontWeight: '600',
-    color: 'rgba(255,255,255,0.7)',
+    color: colors.textMuted,
   },
   dateBtnValueActive: {
     color: ACCENT,
   },
   dateSep: {
     fontSize: 16,
-    color: 'rgba(255,255,255,0.35)',
+    color: colors.textSubtle,
   },
   dateClearBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: 'rgba(231,76,60,0.15)',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.errorSubtle,
     borderWidth: 1,
-    borderColor: '#E74C3C',
+    borderColor: colors.error,
     alignItems: 'center',
     justifyContent: 'center',
   },
   dateClearText: {
-    fontSize: 12,
-    color: '#E74C3C',
+    fontSize: 13,
+    color: colors.error,
     fontWeight: '700',
   },
 });
