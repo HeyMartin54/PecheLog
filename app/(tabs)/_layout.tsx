@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
+import { useAuth } from '@/contexts/AuthContext';
 import { colors } from '@/lib/theme';
 
 function TabBarIcon(props: {
@@ -32,6 +33,15 @@ const tabIconStyles = StyleSheet.create({
 });
 
 export default function TabLayout() {
+  const router = useRouter();
+  const { session, initializing } = useAuth();
+
+  useEffect(() => {
+    if (!initializing && !session) {
+      router.replace('/login');
+    }
+  }, [session, initializing, router]);
+
   return (
     <Tabs
       screenOptions={{
@@ -85,6 +95,15 @@ export default function TabLayout() {
           title: 'Stats',
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="bar-chart" color={color} focused={focused} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Réglages',
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name="settings" color={color} focused={focused} />
           ),
         }}
       />

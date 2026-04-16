@@ -13,7 +13,6 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
-import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { useLocation } from '@/lib/hooks/useLocation';
 import { useWeather } from '@/lib/hooks/useWeather';
 import { supabase } from '@/lib/supabase';
@@ -143,15 +142,13 @@ export default function HomeScreen() {
   const [homeDataLoading, setHomeDataLoading] = useState(false);
 
   const loadHomeData = useCallback(async () => {
-    const effectiveUserId = user?.id ?? DEV_TEST_USER_ID;
+    if (!user?.id) return;
 
-    if (!user?.id) {
-      setDisplayName('Pêcheur');
-    }
+    const effectiveUserId = user.id;
 
     setHomeDataLoading(true);
     try {
-      if (user?.id) {
+      if (true) {
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('display_name')

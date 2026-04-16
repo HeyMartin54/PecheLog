@@ -2,6 +2,14 @@
 
 > Schéma SQL pour Supabase (PostgreSQL).
 > Copier dans Supabase > SQL Editor > New Query > Run
+>
+> **Ordre d'exécution obligatoire :**
+> 1. Tables (`profiles`, `maps`, `catches`, `catch_media`, `map_shares`)
+> 2. Triggers (`on_auth_user_created` sur `auth.users`, `on_profile_created` sur `profiles`)
+> 3. Row Level Security (RLS)
+> 4. Fonctions utilitaires
+>
+> Les triggers utilisent `DROP TRIGGER IF EXISTS` pour être sûrs à ré-exécuter.
 
 ---
 
@@ -37,6 +45,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION handle_new_user();
@@ -64,6 +73,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+DROP TRIGGER IF EXISTS on_profile_created ON profiles;
 CREATE TRIGGER on_profile_created
   AFTER INSERT ON profiles
   FOR EACH ROW EXECUTE FUNCTION create_default_map();

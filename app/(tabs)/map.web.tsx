@@ -4,7 +4,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/contexts/AuthContext';
-import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { supabase } from '@/lib/supabase';
 import { colors } from '@/lib/theme';
 
@@ -147,7 +146,8 @@ export default function MapScreen() {
 
   // ─── Chargement ─────────────────────────────────────────────────────────────
   const loadCatches = useCallback(async () => {
-    const userId = user?.id ?? DEV_TEST_USER_ID;
+    if (!user?.id) return;
+    const userId = user.id;
     setLoading(true);
     try {
       const { data, error } = await supabase

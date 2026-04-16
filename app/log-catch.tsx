@@ -14,13 +14,14 @@ import {
 } from 'react-native';
 import LocationPickerMap from '@/components/LocationPickerMap';
 import StaticMapView from '@/components/StaticMapView';
+import LurePicker from '@/components/LurePicker';
+import { getLureByName } from '@/lib/lures';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/contexts/AuthContext';
-import { DEV_TEST_USER_ID } from '@/lib/dev-test-user';
 import { supabase } from '@/lib/supabase';
 
 // ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
@@ -67,7 +68,7 @@ type OfflineQueuedCatch = {
 
 const OFFLINE_QUEUE_KEY = 'offline_catches_queue_v1';
 
-import { colors } from '@/lib/theme';
+import { colors, radius, spacing } from '@/lib/theme';
 
 const BG_COLOR = colors.bg;
 const CARD_COLOR = colors.surface;
@@ -432,17 +433,10 @@ export default function LogCatchScreen() {
     'Touladi',
     'Site prometteur',
   ]);
-  const [lureOptions, setLureOptions] = useState<string[]>([
-    'Rapala X-Rap',
-    'Cuillère Mepps',
-    'Jig 1/4oz',
-    'Mouche',
-    'Ver',
-    '+ Ajouter',
-  ]);
-
   const [selectedSpecies, setSelectedSpecies] = useState<string | null>('Doré jaune');
-  const [selectedLure, setSelectedLure] = useState<string | null>('Rapala X-Rap');
+  const [selectedLure, setSelectedLure] = useState<string | null>(null);
+  const [showLurePicker, setShowLurePicker] = useState(false);
+  const [customLures, setCustomLures] = useState<string[]>([]);
 
   const [depthMeters, setDepthMeters] = useState<string>('');
   const [sonarDepthMeters] = useState<number | null>(null); // TODO: brancher sur useSonar quand dispo
@@ -478,8 +472,8 @@ export default function LogCatchScreen() {
     let isMounted = true;
 
     const init = async () => {
-      const uid = user?.id ?? DEV_TEST_USER_ID;
-      await trySyncOfflineCatches(uid);
+      if (!user?.id) return;
+      await trySyncOfflineCatches(user.id);
 
       try {
         setAutoLoading(true);
@@ -563,8 +557,7 @@ export default function LogCatchScreen() {
         if (data?.preferred_lures && Array.isArray(data.preferred_lures)) {
           const arr = data.preferred_lures.filter((s: unknown) => typeof s === 'string');
           if (arr.length > 0) {
-            setLureOptions(arr);
-            setSelectedLure(arr[0]);
+            setCustomLures(arr);
           }
         }
       } catch (error) {
@@ -649,7 +642,11 @@ export default function LogCatchScreen() {
   };
 
   const handleSave = async () => {
-    const effectiveUserId = user?.id ?? DEV_TEST_USER_ID;
+    const effectiveUserId = user?.id;
+    if (!effectiveUserId) {
+      Alert.alert('Erreur', 'Tu dois être connecté pour enregistrer une prise.');
+      return;
+    }
 
     if (!selectedSpecies) {
       Alert.alert('Espèce', 'Sélectionne une espèce.');
@@ -884,16 +881,44 @@ export default function LogCatchScreen() {
         {!isSitePrometteur && (
           <View style={styles.section}>
             <SectionTitle>🪝 Leurre</SectionTitle>
-            <View style={styles.chipRow}>
-              {lureOptions.map((lure) => (
-                <Chip
-                  key={lure}
-                  label={lure}
-                  selected={selectedLure === lure}
-                  onPress={() => setSelectedLure(lure)}
-                />
-              ))}
-            </View>
+            <TouchableOpacity
+              style={styles.lureButton}
+              onPress={() => setShowLurePicker(true)}
+              activeOpacity={0.8}
+            >
+              {selectedLure ? (
+                <>
+                  <Text style={styles.lureButtonEmoji}>
+                    {getLureByName(selectedLure)?.emoji ?? '🪝'}
+                  </Text>
+                  <View style={styles.lureButtonInfo}>
+                    <AutoFieldText style={styles.lureButtonName}>{selectedLure}</AutoFieldText>
+                    {getLureByName(selectedLure)?.brand ? (
+                      <AutoFieldText style={styles.lureButtonBrand}>
+                        {getLureByName(selectedLure)?.brand}
+                      </AutoFieldText>
+                    ) : null}
+                  </View>
+                  <AutoFieldText style={styles.lureButtonChange}>Changer ›</AutoFieldText>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.lureButtonEmoji}>🪝</Text>
+                  <AutoFieldText style={styles.lureButtonPlaceholder}>
+                    Choisir un leurre…
+                  </AutoFieldText>
+                  <AutoFieldText style={styles.lureButtonChange}>›</AutoFieldText>
+                </>
+              )}
+            </TouchableOpacity>
+            <LurePicker
+              visible={showLurePicker}
+              selectedLure={selectedLure}
+              customLures={customLures}
+              onSelect={(name) => setSelectedLure(name)}
+              onAddCustom={(name) => setCustomLures((prev) => [...prev, name])}
+              onClose={() => setShowLurePicker(false)}
+            />
           </View>
         )}
 
@@ -1631,5 +1656,45 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
+  // ── Bouton de sélection de leurre ─────────────────────────────────────────
+  lureButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface2,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+    minHeight: 52,
+  },
+  lureButtonEmoji: {
+    fontSize: 26,
+    marginRight: spacing.md,
+  },
+  lureButtonInfo: {
+    flex: 1,
+  },
+  lureButtonName: {
+    fontSize: 15,
+    color: colors.textPrimary,
+    fontWeight: '500',
+  },
+  lureButtonBrand: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 1,
+  },
+  lureButtonPlaceholder: {
+    flex: 1,
+    fontSize: 15,
+    color: colors.textMuted,
+  },
+  lureButtonChange: {
+    fontSize: 14,
+    color: colors.accent,
+    fontWeight: '600',
+    marginLeft: spacing.sm,
+  },
 });
 

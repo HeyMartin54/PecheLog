@@ -28,7 +28,15 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
     storage: Platform.OS === 'web' ? webAuthStorage : AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    // detectSessionInUrl : Supabase scrute l'URL pour #access_token (implicit flow).
+    // Sur web, c'est utile. Sur mobile, l'URL n'est pas accessible donc on désactive.
+    detectSessionInUrl: Platform.OS === 'web',
   },
+});
+
+console.log('[Supabase] Client initialisé', {
+  platform: Platform.OS,
+  url: supabaseUrl,
+  detectSessionInUrl: Platform.OS === 'web',
 });
 

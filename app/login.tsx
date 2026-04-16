@@ -1,66 +1,77 @@
-import { useState } from 'react';
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
 import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { session, initializing, signInWithEmail } = useAuth();
+  const { session, initializing, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  if (!initializing && session) {
-    router.replace('/(tabs)');
-    return null;
-  }
+  const DEV_EMAIL = 'test@pechelog.dev';
+  const DEV_PASSWORD = 'TestPeche2024!';
 
-  const handleEmailLogin = async () => {
+  useEffect(() => {
+    if (!initializing && session) {
+      router.replace('/(tabs)');
+    }
+  }, [initializing, session]);
+
+  const handleGoogleLogin = async () => {
     if (loading) return;
     setErrorMessage(null);
-
-    if (!email || !password) {
-      setErrorMessage('Entre ton courriel et ton mot de passe.');
-      return;
-    }
-
     setLoading(true);
-    const error = await signInWithEmail(email.trim(), password);
+    const error = await signInWithGoogle();
     setLoading(false);
-
     if (error) {
-      setErrorMessage(error.message ?? "Impossible de te connecter. Vérifie tes infos.");
-      return;
+      setErrorMessage(error.message ?? 'Impossible de se connecter avec Google.');
     }
-
-    router.replace('/(tabs)');
   };
 
-  const handleFacebookLogin = () => {
+  const handleFacebookLogin = async () => {
+    if (loading) return;
     setErrorMessage(null);
-    router.replace('/(tabs)');
+    setLoading(true);
+    const error = await signInWithFacebook();
+    setLoading(false);
+    if (error) {
+      setErrorMessage(error.message ?? 'Impossible de se connecter avec Facebook.');
+    }
+  };
+
+  const handleDevLogin = async () => {
+    if (loading) return;
+    setErrorMessage(null);
+    setLoading(true);
+    const error = await signInWithEmail(DEV_EMAIL, DEV_PASSWORD);
+    setLoading(false);
+    if (error) setErrorMessage(error.message ?? 'Identifiants incorrects.');
+  };
+
+  // ── Réinitialisation session (dev uniquement) ─────────────────────────────
+  const handleClearSession = async () => {
+    await supabase.auth.signOut();
+    await AsyncStorage.clear();
+    Alert.alert('Session effacée', 'Redémarre l\'app pour recommencer.');
   };
 
   const isAuthInProgress = loading || initializing;
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <View style={styles.container}>
       <View style={styles.inner}>
 
         {/* Logo */}
@@ -74,68 +85,40 @@ export default function LoginScreen() {
           <Text style={styles.subtitle}>Votre journal de pêche intelligent</Text>
         </View>
 
-        {/* Connexion courriel */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Connexion</Text>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Courriel</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="pecheur@exemple.com"
-              placeholderTextColor={colors.textSubtle}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              value={email}
-              onChangeText={setEmail}
-            />
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Mot de passe</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="••••••••"
-              placeholderTextColor={colors.textSubtle}
-              secureTextEntry
-              value={password}
-              onChangeText={setPassword}
-            />
-          </View>
-
+        {/* Boutons OAuth */}
+        <View style={styles.buttonsContainer}>
           <TouchableOpacity
-            style={[styles.primaryButton, isAuthInProgress && styles.disabledButton]}
-            onPress={handleEmailLogin}
+            style={[styles.oauthButton, styles.googleButton, isAuthInProgress && styles.disabledButton]}
+            onPress={handleGoogleLogin}
             disabled={isAuthInProgress}
             activeOpacity={0.88}
           >
-            {isAuthInProgress ? (
-              <ActivityIndicator color={colors.bg} />
+            {loading ? (
+              <ActivityIndicator color={colors.textPrimary} />
             ) : (
-              <Text style={styles.primaryButtonText}>Se connecter</Text>
+              <>
+                <Text style={styles.oauthIcon}>🔵</Text>
+                <Text style={styles.oauthButtonText}>Continuer avec Google</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.oauthButton, styles.facebookButton, isAuthInProgress && styles.disabledButton]}
+            onPress={handleFacebookLogin}
+            disabled={isAuthInProgress}
+            activeOpacity={0.88}
+          >
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <>
+                <Text style={styles.facebookIcon}>f</Text>
+                <Text style={styles.facebookButtonText}>Continuer avec Facebook</Text>
+              </>
             )}
           </TouchableOpacity>
         </View>
-
-        {/* Ou — Facebook */}
-        <View style={styles.dividerRow}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>ou</Text>
-          <View style={styles.dividerLine} />
-        </View>
-
-        <TouchableOpacity
-          style={[styles.facebookButton, isAuthInProgress && styles.disabledButton]}
-          onPress={handleFacebookLogin}
-          disabled={isAuthInProgress}
-          activeOpacity={0.88}
-        >
-          <View style={styles.facebookIcon}>
-            <Text style={styles.facebookIconText}>f</Text>
-          </View>
-          <Text style={styles.facebookButtonText}>Continuer avec Facebook</Text>
-        </TouchableOpacity>
 
         {errorMessage ? (
           <View style={styles.errorCard}>
@@ -145,11 +128,30 @@ export default function LoginScreen() {
 
         <Text style={styles.terms}>
           En continuant, tu acceptes nos{' '}
-          <Text style={styles.termsLink}>Conditions d'utilisation</Text> et notre{' '}
+          <Text style={styles.termsLink}>Conditions d&apos;utilisation</Text> et notre{' '}
           <Text style={styles.termsLink}>Politique de confidentialité</Text>.
         </Text>
+
+        {/* ── Connexion usager de test (dev uniquement) ─────────────────── */}
+        {__DEV__ && (
+          <View style={styles.devSection}>
+            <Text style={styles.devLabel}>Développement</Text>
+            <TouchableOpacity
+              style={[styles.devLoginBtn, loading && styles.disabledButton]}
+              onPress={handleDevLogin}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.devLoginBtnText}>Se connecter comme usager de test</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.clearBtn} onPress={handleClearSession} activeOpacity={0.7}>
+              <Text style={styles.clearBtnText}>🗑 Effacer session persistée</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -210,86 +212,32 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Card connexion
-  card: {
+  // OAuth Buttons
+  buttonsContainer: {
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  oauthButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.full,
+    paddingVertical: 15,
+    gap: spacing.md,
+  },
+  googleButton: {
     backgroundColor: colors.surface,
-    borderRadius: radius.xl,
-    padding: spacing.xl,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: spacing.md,
-    marginBottom: spacing.lg,
   },
-  cardTitle: {
-    ...typography.h3,
-    color: colors.textPrimary,
-  },
-  inputGroup: {
-    gap: 6,
-  },
-  label: {
-    ...typography.label,
-    color: colors.textMuted,
-  },
-  input: {
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 13,
-    color: colors.textPrimary,
-    fontSize: 15,
-    backgroundColor: colors.surface2,
-  },
-  primaryButton: {
-    marginTop: 4,
-    borderRadius: radius.full,
-    backgroundColor: colors.accent,
-    paddingVertical: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: colors.accent,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 14,
-    elevation: 5,
-  },
-  primaryButtonText: {
-    color: colors.bg,
-    fontWeight: '700',
-    fontSize: 16,
-  },
-
-  // Divider
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    marginBottom: spacing.lg,
-  },
-  dividerLine: {
-    flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.border,
-  },
-  dividerText: {
-    ...typography.label,
-    color: colors.textSubtle,
-  },
-
-  // Facebook
   facebookButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: radius.full,
     backgroundColor: '#1877F2',
-    paddingVertical: 15,
-    gap: spacing.md,
-    marginBottom: spacing.lg,
   },
-  facebookButtonText: {
-    color: '#FFFFFF',
+  oauthIcon: {
+    fontSize: 18,
+  },
+  oauthButtonText: {
+    color: colors.textPrimary,
     fontWeight: '600',
     fontSize: 15,
   },
@@ -300,11 +248,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  facebookIconText: {
-    color: '#1877F2',
     fontWeight: '800',
     fontSize: 16,
+  },
+  facebookButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 15,
   },
 
   // Erreur
@@ -336,5 +286,54 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.65,
+  },
+
+  // Dev section
+  devSection: {
+    marginTop: spacing.xl,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.lg,
+    gap: spacing.sm,
+  },
+  devLabel: {
+    fontSize: 11,
+    color: colors.textSubtle,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  devInput: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.textPrimary,
+  },
+  devLoginBtn: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  devLoginBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  clearBtn: {
+    alignSelf: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+  },
+  clearBtnText: {
+    fontSize: 11,
+    color: colors.textSubtle,
   },
 });
