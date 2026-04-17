@@ -19,10 +19,10 @@ import { getLureByName } from '@/lib/lures';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { enqueueOfflineCatch, trySyncOfflineCatches } from '@/lib/offlineSync';
 
 // ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
 // Nominatim + Overpass : trop lent et peu fiable en production.
@@ -61,13 +61,6 @@ type CatchPayload = {
   local_id: string | null;
 };
 
-type OfflineQueuedCatch = {
-  payload: CatchPayload;
-  media: MediaItem[];
-};
-
-const OFFLINE_QUEUE_KEY = 'offline_catches_queue_v1';
-
 import { colors, radius, spacing } from '@/lib/theme';
 
 const BG_COLOR = colors.bg;
@@ -77,146 +70,9 @@ const TEXT_PRIMARY = colors.textPrimary;
 const TEXT_MUTED = colors.textMuted;
 const BORDER_COLOR = colors.border;
 
-async function enqueueOfflineCatch(item: OfflineQueuedCatch) {
-  try {
-    const existing = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
-    const parsed: OfflineQueuedCatch[] = existing ? JSON.parse(existing) : [];
-    parsed.push(item);
-    await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(parsed));
-  } catch (error) {
-    console.warn(`[Offline] Impossible d'enregistrer la prise hors-ligne`, error);
-  }
-}
-
 function buildCatchInsertPayload(payload: CatchPayload) {
   const { local_id: _localId, ...insertPayload } = payload;
   return insertPayload;
-}
-
-async function trySyncOfflineCatches(userId: string) {
-  try {
-    const existing = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
-    if (!existing) return;
-
-    const queue: OfflineQueuedCatch[] = JSON.parse(existing);
-    if (!Array.isArray(queue) || queue.length === 0) return;
-
-    const remaining: OfflineQueuedCatch[] = [];
-
-    // On tente de pousser chaque entrée; en cas d'erreur réseau, on garde dans la file.
-    // Note : pour l'instant on ne gère pas encore l'upload des médias vers Supabase Storage.
-    for (const item of queue) {
-      try {
-        if (item.payload.user_id !== userId) {
-          remaining.push(item);
-          continue;
-        }
-
-        let payload = item.payload;
-
-        // Si les données météo manquent (capture hors-ligne), tenter de les récupérer maintenant
-        const weatherMissing =
-          payload.weather_conditions == null &&
-          payload.wind_speed_kmh == null &&
-          payload.temperature_c == null;
-
-        if (weatherMissing) {
-          const weather = await fetchWeatherAtTime(payload.latitude, payload.longitude, payload.caught_at);
-          if (weather) {
-            payload = {
-              ...payload,
-              temperature_c: weather.tempC,
-              wind_speed_kmh: weather.windKmh,
-              wind_direction_deg: weather.windDeg,
-              weather_conditions: weather.conditions,
-            };
-          }
-        }
-
-        const { error } = await supabase
-          .from('catches')
-          .insert(buildCatchInsertPayload(payload));
-        if (error) {
-          console.warn('[Offline] Erreur lors de la sync catch hors-ligne', error);
-          remaining.push(item);
-        }
-      } catch (err) {
-        console.warn('[Offline] Erreur inattendue lors de la sync', err);
-        remaining.push(item);
-      }
-    }
-
-    if (remaining.length === 0) {
-      await AsyncStorage.removeItem(OFFLINE_QUEUE_KEY);
-    } else {
-      await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
-    }
-  } catch (error) {
-    console.warn('[Offline] Impossible de synchroniser les prises hors-ligne', error);
-  }
-}
-
-function wmoCodeToCondition(code: number): { label: string; icon: string } {
-  if (code === 0) return { label: 'Ensoleillé', icon: '☀️' };
-  if (code === 1) return { label: 'Peu nuageux', icon: '🌤' };
-  if (code === 2) return { label: 'Partiellement nuageux', icon: '⛅' };
-  if (code === 3) return { label: 'Nuageux', icon: '☁️' };
-  if (code === 45 || code === 48) return { label: 'Brume', icon: '🌫' };
-  if (code >= 51 && code <= 55) return { label: 'Bruine', icon: '🌦' };
-  if (code >= 61 && code <= 65) return { label: 'Pluie', icon: '🌧' };
-  if (code >= 71 && code <= 75) return { label: 'Neige', icon: '🌨' };
-  if (code >= 80 && code <= 82) return { label: 'Averses', icon: '🌧' };
-  if (code >= 95) return { label: 'Orage', icon: '⛈' };
-  return { label: '—', icon: '🌡' };
-}
-
-// Récupère la météo historique pour une date/heure précise via Open-Meteo (gratuit, sans clé API).
-// Utilise l'API forecast avec past_days pour les 16 derniers jours, l'archive au-delà.
-async function fetchWeatherAtTime(
-  latitude: number,
-  longitude: number,
-  isoDateTime: string,
-): Promise<WeatherData | null> {
-  try {
-    const catchDate = new Date(isoDateTime);
-    const dateStr = catchDate.toISOString().split('T')[0];
-    const daysDiff = Math.floor((Date.now() - catchDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    const params = 'hourly=temperature_2m,windspeed_10m,winddirection_10m,weathercode&windspeed_unit=kmh&timezone=auto';
-    const coords = `latitude=${latitude}&longitude=${longitude}`;
-
-    const url =
-      daysDiff <= 16
-        ? `https://api.open-meteo.com/v1/forecast?${coords}&past_days=${Math.min(daysDiff + 1, 16)}&forecast_days=1&${params}`
-        : `https://archive-api.open-meteo.com/v1/archive?${coords}&start_date=${dateStr}&end_date=${dateStr}&${params}`;
-
-    const res = await fetch(url);
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const times: string[] = data?.hourly?.time ?? [];
-    if (times.length === 0) return null;
-
-    // Trouver l'heure la plus proche de la prise
-    const catchTs = catchDate.getTime();
-    let closestIdx = 0;
-    let minDiff = Infinity;
-    for (let i = 0; i < times.length; i++) {
-      const diff = Math.abs(new Date(times[i]).getTime() - catchTs);
-      if (diff < minDiff) { minDiff = diff; closestIdx = i; }
-    }
-
-    const tempC: number | null = data?.hourly?.temperature_2m?.[closestIdx] ?? null;
-    const windKmh: number | null = data?.hourly?.windspeed_10m?.[closestIdx] ?? null;
-    const windDeg: number | null = data?.hourly?.winddirection_10m?.[closestIdx] ?? null;
-    const wmoCode: number = data?.hourly?.weathercode?.[closestIdx] ?? -1;
-    const { label, icon } = wmoCodeToCondition(wmoCode);
-
-    return { tempC, windKmh, windDeg, conditions: label, conditionsIcon: icon };
-  } catch (error) {
-    console.warn('[Weather] Erreur fetch historique Open-Meteo', error);
-    return null;
-  }
 }
 
 const WATER_CLASSES = new Set(['water', 'waterway', 'natural']);

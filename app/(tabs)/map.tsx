@@ -12,9 +12,12 @@ import {
 import MapView, { Callout, Marker, Region } from 'react-native-maps';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { supabase } from '@/lib/supabase';
+import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors } from '@/lib/theme';
 import { getSpeciesColor } from '@/lib/species';
 
@@ -90,6 +93,7 @@ function toggleItem(arr: string[], item: string): string[] {
 export default function MapScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const isConnected = useNetworkStatus();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapRef = useRef<any>(null);
 
@@ -99,6 +103,7 @@ export default function MapScreen() {
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [openPanel, setOpenPanel] = useState<FilterPanel>(null);
   const [showDatePicker, setShowDatePicker] = useState<'from' | 'to' | null>(null);
+  const [fromCache, setFromCache] = useState(false);
 
   // ─── Chargement ────────────────────────────────────────────────────────────
 
@@ -106,26 +111,62 @@ export default function MapScreen() {
     if (!user?.id) return;
     const userId = user.id;
     setLoading(true);
+
+    // Si hors-ligne : charger depuis le cache
+    if (isConnected === false) {
+      const cached = await loadCatchesCache(userId);
+      if (cached) {
+        const valid = cached.filter(
+          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+        ) as CatchPin[];
+        setCatches(valid);
+        setFromCache(true);
+        const region = computeRegion(valid);
+        if (region) setTimeout(() => mapRef.current?.animateToRegion(region, 700), 400);
+      }
+      setLoading(false);
+      return;
+    }
+
+    setFromCache(false);
     try {
       const { data, error } = await supabase
         .from('catches')
-        .select('id, species, latitude, longitude, lake_name, lure, weight_lbs, size_category, weather_conditions, caught_at')
+        .select(CATCH_SELECT_ALL)
         .eq('user_id', userId)
         .order('caught_at', { ascending: false });
 
-      if (error) { console.warn('[Map] Erreur', error); return; }
+      if (error) {
+        console.warn('[Map] Erreur', error);
+        // Fallback cache si erreur réseau inattendue
+        const cached = await loadCatchesCache(userId);
+        if (cached) {
+          const valid = cached.filter(
+            (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+          ) as CatchPin[];
+          setCatches(valid);
+          setFromCache(true);
+          const region = computeRegion(valid);
+          if (region) setTimeout(() => mapRef.current?.animateToRegion(region, 700), 400);
+        }
+        return;
+      }
 
       const valid = (data ?? []).filter(
         (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
       );
       setCatches(valid);
+      setFromCache(false);
+
+      // Sauvegarder dans le cache
+      await saveCatchesCache(userId, data as never);
 
       const region = computeRegion(valid);
       if (region) setTimeout(() => mapRef.current?.animateToRegion(region, 700), 400);
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, isConnected]);
 
   useFocusEffect(useCallback(() => { loadCatches(); }, [loadCatches]));
 
@@ -332,6 +373,14 @@ export default function MapScreen() {
           </Marker>
         ))}
       </MapView>
+
+      {/* Indicateur données locales */}
+      {fromCache && (
+        <View style={styles.cacheNotice}>
+          <Ionicons name="cloud-offline-outline" size={12} color={colors.warning} />
+          <Text style={styles.cacheNoticeText}>Données locales</Text>
+        </View>
+      )}
 
       {/* Bouton satellite */}
       <TouchableOpacity style={styles.satelliteBtn} onPress={() => setSatellite((v) => !v)} activeOpacity={0.85}>
@@ -571,6 +620,28 @@ const styles = StyleSheet.create({
     borderColor: ACCENT,
   },
   resultBadgeText: { fontSize: 12, color: ACCENT, fontWeight: '700' },
+
+  // ── Données locales ──
+  cacheNotice: {
+    position: 'absolute',
+    bottom: 68,
+    left: 14,
+    zIndex: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: 'rgba(6,15,26,0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 166, 35, 0.4)',
+  },
+  cacheNoticeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.warning,
+  },
 
   // ── Satellite ──
   satelliteBtn: {

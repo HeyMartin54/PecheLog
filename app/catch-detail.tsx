@@ -14,9 +14,13 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
 import LocationPickerMap from '@/components/LocationPickerMap';
 import { supabase } from '@/lib/supabase';
+import { loadCatchesCache } from '@/lib/catchCache';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { useAuth } from '@/contexts/AuthContext';
 
 type SizeCategory = 'small' | 'medium' | 'large' | 'trophy';
 type SizeMode = 'approx' | 'measures';
@@ -69,9 +73,12 @@ export default function CatchDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const isWeb = Platform.OS === 'web';
+  const { user } = useAuth();
+  const isConnected = useNetworkStatus();
 
   const [catch_, setCatch] = useState<CatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fromCache, setFromCache] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -96,10 +103,31 @@ export default function CatchDetailScreen() {
   useEffect(() => {
     if (!id) return;
     loadCatch();
-  }, [id]);
+  }, [id, isConnected]);
 
   async function loadCatch() {
     setLoading(true);
+
+    // Hors-ligne : chercher dans le cache local
+    if (isConnected === false) {
+      if (user?.id) {
+        const cached = await loadCatchesCache(user.id);
+        const found = cached?.find((c) => c.id === id);
+        if (found) {
+          const detail = found as unknown as CatchDetail;
+          setCatch(detail);
+          populateForm(detail);
+          setFromCache(true);
+          setLoading(false);
+          return;
+        }
+      }
+      Alert.alert('Hors-ligne', 'Cette prise n\'est pas disponible localement.');
+      router.back();
+      return;
+    }
+
+    setFromCache(false);
     try {
       const [catchRes, mediaRes] = await Promise.all([
         supabase
@@ -119,6 +147,18 @@ export default function CatchDetailScreen() {
       ]);
 
       if (catchRes.error || !catchRes.data) {
+        // Tentative de fallback sur le cache
+        if (user?.id) {
+          const cached = await loadCatchesCache(user.id);
+          const found = cached?.find((c) => c.id === id);
+          if (found) {
+            const detail = found as unknown as CatchDetail;
+            setCatch(detail);
+            populateForm(detail);
+            setFromCache(true);
+            return;
+          }
+        }
         Alert.alert('Erreur', 'Impossible de charger cette prise.');
         router.back();
         return;
@@ -244,17 +284,24 @@ export default function CatchDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backBtnText}>← Retour</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          onPress={editing ? handleSave : handleEditToggle}
-          style={[styles.editBtn, editing && styles.saveBtn]}
-          disabled={saving}
-        >
-          {saving ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Text style={[styles.editBtnText, editing && { color: '#fff' }]}>{editing ? 'Sauvegarder' : 'Modifier'}</Text>
-          )}
-        </TouchableOpacity>
+        {fromCache ? (
+          <View style={styles.offlineBadge}>
+            <Ionicons name="cloud-offline-outline" size={12} color={colors.warning} />
+            <Text style={styles.offlineBadgeText}>Lecture seule</Text>
+          </View>
+        ) : (
+          <TouchableOpacity
+            onPress={editing ? handleSave : handleEditToggle}
+            style={[styles.editBtn, editing && styles.saveBtn]}
+            disabled={saving}
+          >
+            {saving ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={[styles.editBtnText, editing && { color: '#fff' }]}>{editing ? 'Sauvegarder' : 'Modifier'}</Text>
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView
@@ -502,7 +549,7 @@ export default function CatchDetailScreen() {
           </TouchableOpacity>
         )}
 
-        {!editing && !confirmDelete && (
+        {!editing && !confirmDelete && !fromCache && (
           <TouchableOpacity style={styles.deleteBtn} onPress={() => setConfirmDelete(true)}>
             <Text style={styles.deleteBtnText}>🗑 Supprimer cette prise</Text>
           </TouchableOpacity>
@@ -686,6 +733,22 @@ const styles = StyleSheet.create({
     color: ACCENT,
     fontSize: 14,
     fontWeight: '600',
+  },
+  offlineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.warningSubtle,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 166, 35, 0.35)',
+  },
+  offlineBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.warning,
   },
   editBtn: {
     paddingHorizontal: 18,

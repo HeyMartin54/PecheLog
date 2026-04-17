@@ -14,8 +14,10 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useLocation } from '@/lib/hooks/useLocation';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useWeather } from '@/lib/hooks/useWeather';
 import { supabase } from '@/lib/supabase';
+import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors, typography, spacing, radius, shadow } from '@/lib/theme';
 import { getSpeciesConfig } from '@/lib/species';
 
@@ -131,6 +133,7 @@ export default function HomeScreen() {
     coords?.coords.latitude ?? null,
     coords?.coords.longitude ?? null,
   );
+  const isConnected = useNetworkStatus();
 
   const [displayName, setDisplayName] = useState<string>('Pêcheur');
   const [stats, setStats] = useState<Stat[]>([
@@ -140,64 +143,84 @@ export default function HomeScreen() {
   ]);
   const [recentCatches, setRecentCatches] = useState<CatchRow[]>([]);
   const [homeDataLoading, setHomeDataLoading] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
+
+  const applyList = (list: CatchRow[]) => {
+    const lakeSet = new Set(
+      list.map((r) => r.lake_name?.trim()).filter((n): n is string => !!n?.length),
+    );
+    const weights = list
+      .map((r) => r.weight_lbs)
+      .filter((w): w is number => typeof w === 'number' && !Number.isNaN(w));
+    const recordLb = weights.length > 0 ? Math.max(...weights) : null;
+
+    setStats([
+      { label: 'Prises', value: String(list.length), icon: 'fish' },
+      { label: 'Lacs', value: String(lakeSet.size), icon: 'water' },
+      {
+        label: 'lb record',
+        value: recordLb != null ? recordLb.toFixed(1) : '—',
+        icon: 'trophy',
+      },
+    ]);
+    setRecentCatches(list.slice(0, 5));
+  };
 
   const loadHomeData = useCallback(async () => {
     if (!user?.id) return;
 
     const effectiveUserId = user.id;
-
     setHomeDataLoading(true);
-    try {
-      if (true) {
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('display_name')
-          .eq('id', user.id)
-          .maybeSingle();
 
-        if (profileError) {
-          console.warn('[Home] Erreur profil', profileError);
-        } else if (profile?.display_name?.trim()) {
-          setDisplayName(profile.display_name.trim());
-        } else if (user.email) {
-          setDisplayName(user.email.split('@')[0] ?? 'Pêcheur');
-        }
+    // Si hors-ligne : charger depuis le cache
+    if (isConnected === false) {
+      const cached = await loadCatchesCache(effectiveUserId);
+      if (cached) {
+        applyList(cached as CatchRow[]);
+        setFromCache(true);
+      }
+      setHomeDataLoading(false);
+      return;
+    }
+
+    setFromCache(false);
+    try {
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('display_name')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        console.warn('[Home] Erreur profil', profileError);
+      } else if (profile?.display_name?.trim()) {
+        setDisplayName(profile.display_name.trim());
+      } else if (user.email) {
+        setDisplayName(user.email.split('@')[0] ?? 'Pêcheur');
       }
 
       const { data: rows, error: catchesError } = await supabase
         .from('catches')
-        .select('id, species, lake_name, lure, weight_lbs, caught_at')
+        .select(CATCH_SELECT_ALL)
         .eq('user_id', effectiveUserId)
         .order('caught_at', { ascending: false });
 
       if (catchesError) {
         console.warn('[Home] Erreur prises', catchesError);
+        // Fallback cache si erreur réseau inattendue
+        const cached = await loadCatchesCache(effectiveUserId);
+        if (cached) { applyList(cached as CatchRow[]); setFromCache(true); }
         return;
       }
 
       const list = rows ?? [];
-      const lakeSet = new Set(
-        list.map((r) => r.lake_name?.trim()).filter((n): n is string => !!n?.length),
-      );
-      const weights = list
-        .map((r) => r.weight_lbs)
-        .filter((w): w is number => typeof w === 'number' && !Number.isNaN(w));
-      const recordLb = weights.length > 0 ? Math.max(...weights) : null;
-
-      setStats([
-        { label: 'Prises', value: String(list.length), icon: 'fish' },
-        { label: 'Lacs', value: String(lakeSet.size), icon: 'water' },
-        {
-          label: 'lb record',
-          value: recordLb != null ? recordLb.toFixed(1) : '—',
-          icon: 'trophy',
-        },
-      ]);
-      setRecentCatches(list.slice(0, 5));
+      applyList(list as CatchRow[]);
+      // Sauvegarder dans le cache pour la prochaine utilisation hors-ligne
+      await saveCatchesCache(effectiveUserId, list as never);
     } finally {
       setHomeDataLoading(false);
     }
-  }, [user?.id, user?.email]);
+  }, [user?.id, user?.email, isConnected]);
 
   useFocusEffect(
     useCallback(() => {
@@ -292,9 +315,16 @@ export default function HomeScreen() {
         {/* ── Prises récentes ───────────────────────────────────────────────── */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Prises récentes</Text>
-          <TouchableOpacity>
-            <Text style={styles.sectionLink}>Voir tout</Text>
-          </TouchableOpacity>
+          {fromCache ? (
+            <View style={styles.cacheNotice}>
+              <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
+              <Text style={styles.cacheNoticeText}>Données locales</Text>
+            </View>
+          ) : (
+            <TouchableOpacity>
+              <Text style={styles.sectionLink}>Voir tout</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={styles.catchList}>
@@ -501,6 +531,22 @@ const styles = StyleSheet.create({
     ...typography.bodySmall,
     color: colors.accent,
     fontWeight: '500',
+  },
+  cacheNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: colors.warningSubtle,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 166, 35, 0.25)',
+  },
+  cacheNoticeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.warning,
   },
 
   // Liste des prises

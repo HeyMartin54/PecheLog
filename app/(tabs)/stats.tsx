@@ -11,8 +11,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { getSpeciesConfig } from '@/lib/species';
 import { supabase } from '@/lib/supabase';
+import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -338,29 +340,49 @@ const recStyles = StyleSheet.create({
 
 export default function StatsScreen() {
   const { user } = useAuth();
+  const isConnected = useNetworkStatus();
   const [allCatches, setAllCatches] = useState<CatchRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState<Period>('all');
   const [speciesFilter, setSpeciesFilter] = useState<string | null>(null);
   const [lakeFilter, setLakeFilter] = useState<string | null>(null);
+  const [fromCache, setFromCache] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!user?.id) return;
     const userId = user.id;
     setLoading(true);
+
+    // Hors-ligne : charger depuis le cache
+    if (isConnected === false) {
+      const cached = await loadCatchesCache(userId);
+      if (cached) {
+        setAllCatches(cached as unknown as CatchRow[]);
+        setFromCache(true);
+      }
+      setLoading(false);
+      return;
+    }
+
+    setFromCache(false);
     try {
       const { data, error } = await supabase
         .from('catches')
-        .select(
-          'id, species, lure, lake_name, depth_meters, weight_lbs, length_inches, size_category, caught_at',
-        )
+        .select(CATCH_SELECT_ALL)
         .eq('user_id', userId)
         .order('caught_at', { ascending: false });
-      if (!error && data) setAllCatches(data);
+      if (!error && data) {
+        setAllCatches(data as unknown as CatchRow[]);
+        await saveCatchesCache(userId, data as never);
+      } else if (error) {
+        // Fallback cache si erreur réseau inattendue
+        const cached = await loadCatchesCache(userId);
+        if (cached) { setAllCatches(cached as unknown as CatchRow[]); setFromCache(true); }
+      }
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, isConnected]);
 
   useFocusEffect(
     useCallback(() => {
@@ -482,9 +504,14 @@ export default function StatsScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Statistiques</Text>
-        {allCatches.length > 0 && (
+        {fromCache ? (
+          <View style={styles.cacheNotice}>
+            <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
+            <Text style={styles.cacheNoticeText}>Données locales</Text>
+          </View>
+        ) : allCatches.length > 0 ? (
           <Text style={styles.headerSub}>{allCatches.length} prises au total</Text>
-        )}
+        ) : null}
       </View>
 
       {loading ? (
@@ -708,6 +735,22 @@ const styles = StyleSheet.create({
   headerSub: { ...typography.bodySmall, color: colors.textMuted },
 
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  cacheNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: colors.warningSubtle,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 166, 35, 0.25)',
+  },
+  cacheNoticeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.warning,
+  },
 
   emptyState: {
     flex: 1,

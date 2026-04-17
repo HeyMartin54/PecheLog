@@ -4,7 +4,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { supabase } from '@/lib/supabase';
+import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors } from '@/lib/theme';
 
 // ─── Leaflet (web uniquement) ─────────────────────────────────────────────────
@@ -124,9 +126,11 @@ function MapFitter({ catches }: { catches: CatchPin[] }) {
 export default function MapScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const isConnected = useNetworkStatus();
 
   const [catches, setCatches] = useState<CatchPin[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fromCache, setFromCache] = useState(false);
   const [leafletReady, setLeafletReady] = useState(false);
   const [satellite, setSatellite] = useState(false);
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
@@ -149,20 +153,46 @@ export default function MapScreen() {
     if (!user?.id) return;
     const userId = user.id;
     setLoading(true);
+
+    // Si hors-ligne : charger depuis le cache
+    if (isConnected === false) {
+      const cached = await loadCatchesCache(userId);
+      if (cached) {
+        setCatches(cached.filter(
+          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+        ) as CatchPin[]);
+        setFromCache(true);
+      }
+      setLoading(false);
+      return;
+    }
+
+    setFromCache(false);
     try {
       const { data, error } = await supabase
         .from('catches')
-        .select('id, species, latitude, longitude, lake_name, lure, weight_lbs, weather_conditions, caught_at')
+        .select(CATCH_SELECT_ALL)
         .eq('user_id', userId)
         .order('caught_at', { ascending: false });
-      if (error) { console.warn('[Map web]', error); return; }
+      if (error) {
+        console.warn('[Map web]', error);
+        const cached = await loadCatchesCache(userId);
+        if (cached) {
+          setCatches(cached.filter(
+            (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+          ) as CatchPin[]);
+          setFromCache(true);
+        }
+        return;
+      }
       setCatches((data ?? []).filter(
         (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
       ));
+      await saveCatchesCache(userId, data as never);
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, isConnected]);
 
   useFocusEffect(useCallback(() => { loadCatches(); }, [loadCatches]));
 
@@ -371,6 +401,19 @@ export default function MapScreen() {
           fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
         }}>
           {visibleCatches.length} résultat{visibleCatches.length !== 1 ? 's' : ''}
+        </div>
+      )}
+
+      {/* Indicateur données locales */}
+      {fromCache && (
+        <div style={{
+          position: 'absolute', bottom: 64, left: 14, zIndex: 1000,
+          display: 'flex', alignItems: 'center', gap: 5,
+          background: 'rgba(6,20,37,0.92)', borderRadius: 20,
+          border: '1px solid rgba(245,166,35,0.4)',
+          padding: '5px 10px', fontSize: 11, fontWeight: 600, color: colors.warning,
+        }}>
+          ☁️ Données locales
         </div>
       )}
 

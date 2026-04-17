@@ -3,11 +3,16 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { StyleSheet, View } from 'react-native';
 import 'react-native-reanimated';
 
+import ConnectionBadge from '@/components/ConnectionBadge';
 import { useColorScheme } from '@/components/useColorScheme';
 import { AuthProvider } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/AuthContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { trySyncOfflineCatches } from '@/lib/offlineSync';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -46,19 +51,54 @@ export default function RootLayout() {
   return <RootLayoutNav />;
 }
 
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+  badgeOverlay: {
+    position: 'absolute',
+    top: 52,
+    right: 16,
+    zIndex: 9999,
+  },
+});
+
+// Détecte le retour en ligne et déclenche la synchronisation des prises hors-ligne
+function SyncManager() {
+  const { user } = useAuth();
+  const isConnected = useNetworkStatus();
+  const prevConnected = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    // Transition offline → online : on synchronise
+    if (isConnected === true && prevConnected.current === false && user?.id) {
+      trySyncOfflineCatches(user.id);
+    }
+    prevConnected.current = isConnected;
+  }, [isConnected, user?.id]);
+
+  return null;
+}
+
 function RootLayoutNav() {
   const colorScheme = useColorScheme();
 
   return (
     <AuthProvider>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <Stack>
-          <Stack.Screen name="login" options={{ headerShown: false }} />
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
-          <Stack.Screen name="catch-detail" options={{ headerShown: false }} />
-          <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
-        </Stack>
+        <View style={styles.root}>
+          <Stack>
+            <Stack.Screen name="login" options={{ headerShown: false }} />
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
+            <Stack.Screen name="catch-detail" options={{ headerShown: false }} />
+            <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+          </Stack>
+          <SyncManager />
+          <View style={styles.badgeOverlay} pointerEvents="none">
+            <ConnectionBadge />
+          </View>
+        </View>
       </ThemeProvider>
     </AuthProvider>
   );
