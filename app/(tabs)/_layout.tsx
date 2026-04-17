@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Tabs, useRouter } from 'expo-router';
 import React, { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useAuth } from '@/contexts/AuthContext';
@@ -35,6 +36,7 @@ const tabIconStyles = StyleSheet.create({
 export default function TabLayout() {
   const router = useRouter();
   const { session, initializing } = useAuth();
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (!initializing && !session) {
@@ -51,8 +53,8 @@ export default function TabLayout() {
           backgroundColor: colors.tabBar,
           borderTopColor: colors.tabBarBorder,
           borderTopWidth: StyleSheet.hairlineWidth,
-          height: 60,
-          paddingBottom: 8,
+          height: 60 + insets.bottom,
+          paddingBottom: 8 + insets.bottom,
           paddingTop: 6,
         },
         tabBarLabelStyle: {

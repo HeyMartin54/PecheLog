@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -75,6 +76,7 @@ export default function CatchDetailScreen() {
   const isWeb = Platform.OS === 'web';
   const { user } = useAuth();
   const isConnected = useNetworkStatus();
+  const insets = useSafeAreaInsets();
 
   const [catch_, setCatch] = useState<CatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -280,7 +282,7 @@ export default function CatchDetailScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backBtnText}>← Retour</Text>
         </TouchableOpacity>
@@ -587,7 +589,7 @@ export default function CatchDetailScreen() {
       {/* Modal sélection GPS — mobile uniquement */}
       <Modal visible={!isWeb && showLocationPicker} animationType="slide" statusBarTranslucent>
         <View style={styles.pickerContainer}>
-          <View style={styles.pickerHeader}>
+          <View style={[styles.pickerHeader, { paddingTop: insets.top + 12 }]}>
             <TouchableOpacity onPress={() => setShowLocationPicker(false)}>
               <Text style={styles.backBtnText}>← Annuler</Text>
             </TouchableOpacity>
@@ -715,7 +717,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 56 : 20,
+    paddingTop: 0,
     paddingBottom: 14,
     backgroundColor: BG,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -1037,7 +1039,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 56 : 20,
+    paddingTop: 0,
     paddingBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: BORDER,

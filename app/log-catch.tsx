@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationPickerMap from '@/components/LocationPickerMap';
 import StaticMapView from '@/components/StaticMapView';
 import LurePicker from '@/components/LurePicker';
@@ -265,6 +266,7 @@ async function fetchWeatherFromOpenWeather(
 export default function LogCatchScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
 
   // Auto-captured
   const [coords, setCoords] = useState<Location.LocationObject | null>(null);
@@ -591,7 +593,7 @@ export default function LogCatchScreen() {
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity
           onPress={() => router.back()}
           style={styles.backButton}
@@ -930,7 +932,7 @@ export default function LogCatchScreen() {
       </ScrollView>
 
       <TouchableOpacity
-        style={[styles.saveButton, saving && styles.saveButtonDisabled]}
+        style={[styles.saveButton, { bottom: insets.bottom + 16 }, saving && styles.saveButtonDisabled]}
         activeOpacity={0.9}
         onPress={saving ? undefined : handleSave}
       >
@@ -943,7 +945,7 @@ export default function LogCatchScreen() {
 
       <Modal visible={showLocationPicker} animationType="slide" statusBarTranslucent>
         <View style={styles.pickerContainer}>
-          <View style={styles.pickerHeader}>
+          <View style={[styles.pickerHeader, { paddingTop: insets.top + 12 }]}>
             <TouchableOpacity onPress={() => setShowLocationPicker(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Text style={styles.pickerCancel}>Annuler</Text>
             </TouchableOpacity>
@@ -1124,7 +1126,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 50 : 24,
+    paddingTop: 0,
     paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER_COLOR,
@@ -1418,7 +1420,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 16,
     right: 16,
-    bottom: Platform.OS === 'ios' ? 28 : 16,
+    bottom: 0,
     paddingVertical: 16,
     borderRadius: 999,
     backgroundColor: ACCENT_COLOR,
@@ -1459,7 +1461,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 18,
-    paddingTop: Platform.OS === 'ios' ? 56 : 28,
+    paddingTop: 0,
     paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER_COLOR,
