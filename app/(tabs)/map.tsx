@@ -13,6 +13,7 @@ import MapView, { Callout, Marker, Region } from 'react-native-maps';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
@@ -94,6 +95,7 @@ export default function MapScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const isConnected = useNetworkStatus();
+  const insets = useSafeAreaInsets();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapRef = useRef<any>(null);
 
@@ -388,7 +390,7 @@ export default function MapScreen() {
       </TouchableOpacity>
 
       {/* Barre de filtres */}
-      <View style={styles.filterBar}>
+      <View style={[styles.filterBar, { top: insets.top }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
 
           {/* Bouton Espèce */}

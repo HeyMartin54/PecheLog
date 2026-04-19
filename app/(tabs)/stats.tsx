@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
@@ -341,6 +342,7 @@ const recStyles = StyleSheet.create({
 export default function StatsScreen() {
   const { user } = useAuth();
   const isConnected = useNetworkStatus();
+  const insets = useSafeAreaInsets();
   const [allCatches, setAllCatches] = useState<CatchRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState<Period>('all');
@@ -502,7 +504,7 @@ export default function StatsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Text style={styles.headerTitle}>Statistiques</Text>
         {fromCache ? (
           <View style={styles.cacheNotice}>

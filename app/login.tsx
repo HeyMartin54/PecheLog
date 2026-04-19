@@ -9,6 +9,7 @@ import {
     View
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
@@ -17,6 +18,7 @@ import { colors, radius, spacing, typography } from '@/lib/theme';
 export default function LoginScreen() {
   const router = useRouter();
   const { session, initializing, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
+  const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -72,7 +74,7 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.inner}>
+      <View style={[styles.inner, { paddingTop: insets.top + 32 }]}>
 
         {/* Logo */}
         <View style={styles.logoContainer}>
@@ -163,7 +165,7 @@ const styles = StyleSheet.create({
   inner: {
     flex: 1,
     paddingHorizontal: spacing.xl,
-    paddingTop: 72,
+    paddingTop: 0,
     paddingBottom: spacing.xxl,
     justifyContent: 'flex-start',
   },

@@ -9,6 +9,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -16,6 +17,7 @@ import { colors, radius, spacing, typography } from '@/lib/theme';
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const insets = useSafeAreaInsets();
   const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = async () => {
@@ -34,7 +36,7 @@ export default function SettingsScreen() {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.lg }]}
       showsVerticalScrollIndicator={false}
     >
       {/* Profil */}

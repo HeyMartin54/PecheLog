@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
@@ -128,6 +129,7 @@ const speciesAvatarStyles = StyleSheet.create({
 export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const { coords, lakeName } = useLocation();
   const { temperatureC, windKmh } = useWeather(
     coords?.coords.latitude ?? null,
@@ -241,7 +243,7 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* ── Header ──────────────────────────────────────────────────────── */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
           <View style={styles.greetingRow}>
             <View>
               <Text style={styles.greeting}>Bonjour 👋</Text>
