@@ -13,15 +13,24 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import LocationPickerMap from '@/components/LocationPickerMap';
+import LureFormModal from '@/components/LureFormModal';
+import LurePicker from '@/components/LurePicker';
 import { supabase } from '@/lib/supabase';
 import { loadCatchesCache } from '@/lib/catchCache';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useAuth } from '@/contexts/AuthContext';
+import {
+  createUserLure,
+  loadLuresWithCache,
+  setCachedLures,
+  type UserLure,
+} from '@/lib/lureStorage';
 
 type SizeCategory = 'small' | 'medium' | 'large' | 'trophy';
 type SizeMode = 'approx' | 'measures';
@@ -38,6 +47,92 @@ type CatchMedia = {
 function windDegToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
   return dirs[Math.round(deg / 45) % 8];
+}
+
+type WeatherData = {
+  tempC: number | null;
+  windKmh: number | null;
+  windDeg: number | null;
+  conditions: string | null;
+  conditionsIcon: string;
+};
+
+function getWeatherConditionFr(main: string, cloudiness: number): { label: string; icon: string } {
+  switch (main) {
+    case 'Clear': return { label: 'Ensoleillé', icon: '☀️' };
+    case 'Clouds':
+      if (cloudiness < 25) return { label: 'Peu nuageux', icon: '🌤' };
+      if (cloudiness < 75) return { label: 'Partiellement nuageux', icon: '⛅' };
+      return { label: 'Nuageux', icon: '☁️' };
+    case 'Rain':
+    case 'Drizzle': return { label: 'Pluie', icon: '🌧' };
+    case 'Thunderstorm': return { label: 'Orage', icon: '⛈' };
+    case 'Snow': return { label: 'Neige', icon: '🌨' };
+    case 'Mist':
+    case 'Fog':
+    case 'Haze': return { label: 'Brume', icon: '🌫' };
+    default: return { label: main, icon: '🌡' };
+  }
+}
+
+async function fetchWeatherFromOpenWeather(lat: number, lon: number): Promise<WeatherData | null> {
+  const apiKey = process.env.EXPO_PUBLIC_OPENWEATHER_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(
+      `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${apiKey}`,
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const tempC = typeof data?.main?.temp === 'number' ? data.main.temp : null;
+    const windMs = typeof data?.wind?.speed === 'number' ? data.wind.speed : null;
+    const windKmh = windMs != null ? windMs * 3.6 : null;
+    const windDeg = typeof data?.wind?.deg === 'number' ? data.wind.deg : null;
+    const weatherMain: string = data?.weather?.[0]?.main ?? '';
+    const cloudiness: number = typeof data?.clouds?.all === 'number' ? data.clouds.all : 50;
+    const { label, icon } = weatherMain ? getWeatherConditionFr(weatherMain, cloudiness) : { label: null, icon: '🌡' };
+    return { tempC, windKmh, windDeg, conditions: label, conditionsIcon: icon };
+  } catch { return null; }
+}
+
+function dtFmtDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function dtFmtTime(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+async function fetchWeatherForDatetime(lat: number, lon: number, datetime: Date): Promise<WeatherData | null> {
+  const diffMs = Date.now() - datetime.getTime();
+  const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+  if (diffMs < 60 * 60 * 1000) return fetchWeatherFromOpenWeather(lat, lon);
+
+  try {
+    const dateStr = datetime.toISOString().slice(0, 10);
+    const baseUrl = diffDays <= 92
+      ? `https://api.open-meteo.com/v1/forecast?past_days=${Math.ceil(diffDays)}&forecast_days=1`
+      : `https://archive-api.open-meteo.com/v1/archive?start_date=${dateStr}&end_date=${dateStr}`;
+    const url = `${baseUrl}&latitude=${lat}&longitude=${lon}&hourly=temperature_2m,windspeed_10m,winddirection_10m,cloudcover&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
+    const data = await res.json();
+    const times: string[] = data.hourly?.time ?? [];
+    const targetHour = datetime.getHours();
+    const idx = times.findIndex((t) => t.startsWith(dateStr) && new Date(t).getHours() === targetHour);
+    if (idx === -1) throw new Error('Heure non trouvée');
+    const tempC = data.hourly.temperature_2m?.[idx] ?? null;
+    const windKmh = data.hourly.windspeed_10m?.[idx] ?? null;
+    const windDeg = data.hourly.winddirection_10m?.[idx] ?? null;
+    const cloudiness: number = data.hourly.cloudcover?.[idx] ?? 50;
+    const weatherMain = cloudiness < 20 ? 'Clear' : cloudiness < 70 ? 'Clouds' : 'Overcast';
+    const { label, icon } = getWeatherConditionFr(weatherMain, cloudiness);
+    return { tempC, windKmh, windDeg, conditions: label, conditionsIcon: icon };
+  } catch (e) {
+    console.warn('[Weather] Open-Meteo historique échoué, fallback courant', e);
+    return fetchWeatherFromOpenWeather(lat, lon);
+  }
 }
 
 type CatchDetail = {
@@ -101,11 +196,31 @@ export default function CatchDetailScreen() {
   const [longitude, setLongitude] = useState<number | null>(null);
   const [showLocationPicker, setShowLocationPicker] = useState(false);
   const [pickerCoord, setPickerCoord] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [showLurePicker, setShowLurePicker] = useState(false);
+  const [showLureForm, setShowLureForm] = useState(false);
+  const [userLures, setUserLures] = useState<UserLure[]>([]);
+
+  // Date/heure éditable + météo associée
+  const [editDateTime, setEditDateTime] = useState<Date>(() => new Date());
+  const [showDateTimePicker, setShowDateTimePicker] = useState(false);
+  const [datePickerMode, setDatePickerMode] = useState<'date' | 'time'>('date');
+  const [editTempC, setEditTempC] = useState<number | null>(null);
+  const [editWindKmh, setEditWindKmh] = useState<number | null>(null);
+  const [editWindDeg, setEditWindDeg] = useState<number | null>(null);
+  const [editConditions, setEditConditions] = useState<string | null>(null);
+  // Web : états string intermédiaires
+  const [webDate, setWebDate] = useState(() => dtFmtDate(new Date()));
+  const [webTime, setWebTime] = useState(() => dtFmtTime(new Date()));
 
   useEffect(() => {
     if (!id) return;
     loadCatch();
   }, [id, isConnected]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    loadLuresWithCache(user.id).then(setUserLures);
+  }, [user?.id]);
 
   async function loadCatch() {
     setLoading(true);
@@ -190,6 +305,14 @@ export default function CatchDetailScreen() {
     if (data.latitude != null && data.longitude != null) {
       setPickerCoord({ latitude: data.latitude, longitude: data.longitude });
     }
+    const dt = new Date(data.caught_at);
+    setEditDateTime(dt);
+    setWebDate(dtFmtDate(dt));
+    setWebTime(dtFmtTime(dt));
+    setEditTempC(data.temperature_c ?? null);
+    setEditWindKmh(data.wind_speed_kmh ?? null);
+    setEditWindDeg(data.wind_direction_deg ?? null);
+    setEditConditions(data.weather_conditions ?? null);
   }
 
   function handleEditToggle() {
@@ -199,6 +322,75 @@ export default function CatchDetailScreen() {
     }
     setEditing((v) => !v);
   }
+
+  const handleWebDateBlur = () => {
+    const parts = webDate.trim().split('-').map(Number);
+    if (parts.length === 3 && parts.every((n) => !isNaN(n))) {
+      const [y, m, d] = parts;
+      if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+        const dt = new Date(editDateTime);
+        dt.setFullYear(y, m - 1, d);
+        handleDateTimeCommit(dt);
+      }
+    }
+  };
+
+  const handleWebTimeBlur = () => {
+    const parts = webTime.trim().split(':').map(Number);
+    if (parts.length >= 2 && parts.every((n) => !isNaN(n))) {
+      const [h, min] = parts;
+      if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
+        const dt = new Date(editDateTime);
+        dt.setHours(h, min, 0, 0);
+        handleDateTimeCommit(dt);
+      }
+    }
+  };
+
+  const handleDateTimeCommit = async (dt: Date) => {
+    setEditDateTime(dt);
+    setWebDate(dtFmtDate(dt));
+    setWebTime(dtFmtTime(dt));
+    if (latitude == null || longitude == null) return;
+    const weather = await fetchWeatherForDatetime(latitude, longitude, dt);
+    if (weather) {
+      setEditTempC(weather.tempC);
+      setEditWindKmh(weather.windKmh);
+      setEditWindDeg(weather.windDeg);
+      setEditConditions(weather.conditions);
+    }
+  };
+
+  const refreshEditWeather = async (lat: number, lon: number) => {
+    const w = await fetchWeatherForDatetime(lat, lon, editDateTime);
+    if (w) {
+      setEditTempC(w.tempC);
+      setEditWindKmh(w.windKmh);
+      setEditWindDeg(w.windDeg);
+      setEditConditions(w.conditions);
+    }
+  };
+
+  const handlePickerChange = (_: any, selected?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowDateTimePicker(false);
+      if (!selected) return;
+      if (datePickerMode === 'date') {
+        const merged = new Date(selected);
+        merged.setHours(editDateTime.getHours(), editDateTime.getMinutes(), 0, 0);
+        setEditDateTime(merged);
+        setDatePickerMode('time');
+        setShowDateTimePicker(true);
+      } else {
+        const merged = new Date(editDateTime);
+        merged.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+        handleDateTimeCommit(merged);
+        setDatePickerMode('date');
+      }
+    } else {
+      if (selected) handleDateTimeCommit(selected);
+    }
+  };
 
   async function handleSave() {
     if (!catch_) return;
@@ -220,6 +412,11 @@ export default function CatchDetailScreen() {
         notes: notes.trim() || null,
         latitude,
         longitude,
+        caught_at: editDateTime.toISOString(),
+        temperature_c: editTempC,
+        wind_speed_kmh: editWindKmh,
+        wind_direction_deg: editWindDeg,
+        weather_conditions: editConditions,
       };
 
       const { error } = await supabase
@@ -345,6 +542,7 @@ export default function CatchDetailScreen() {
                   setPickerCoord(c);
                   setLatitude(c.latitude);
                   setLongitude(c.longitude);
+                  refreshEditWeather(c.latitude, c.longitude);
                 }}
               />
               {/* Overlay bloquant les interactions hors mode édition */}
@@ -387,8 +585,72 @@ export default function CatchDetailScreen() {
                     : '—'
                 }
               />
-              <InfoRow label="Date" value={caughtDate} />
-              <InfoRow label="Heure" value={caughtTime} />
+              {editing ? (
+                Platform.OS === 'web' ? (
+                  <View style={styles.dateTimeButton}>
+                    <Text style={styles.dateTimeBtnIcon}>📅</Text>
+                    <TextInput
+                      style={[styles.dateTimeBtnDate, { flex: 1, padding: 0 }]}
+                      value={webDate}
+                      onChangeText={setWebDate}
+                      onBlur={handleWebDateBlur}
+                      placeholder="AAAA-MM-JJ"
+                      placeholderTextColor={ACCENT}
+                      maxLength={10}
+                    />
+                    <Text style={[styles.dateTimeBtnTime, { marginHorizontal: 8, opacity: 1 }]}>🕐</Text>
+                    <TextInput
+                      style={[styles.dateTimeBtnTime, { padding: 0, opacity: 1 }]}
+                      value={webTime}
+                      onChangeText={setWebTime}
+                      onBlur={handleWebTimeBlur}
+                      placeholder="HH:MM"
+                      placeholderTextColor={ACCENT}
+                      maxLength={5}
+                    />
+                  </View>
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      style={styles.dateTimeButton}
+                      onPress={() => { setDatePickerMode('date'); setShowDateTimePicker(true); }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.dateTimeBtnIcon}>📅</Text>
+                      <View style={styles.dateTimeBtnText}>
+                        <Text style={styles.dateTimeBtnDate}>
+                          {editDateTime.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
+                        </Text>
+                        <Text style={styles.dateTimeBtnTime}>
+                          🕐 {editDateTime.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                      <Text style={styles.dateTimeBtnChevron}>›</Text>
+                    </TouchableOpacity>
+                    {showDateTimePicker && (
+                      <DateTimePicker
+                        value={editDateTime}
+                        mode={Platform.OS === 'ios' ? 'datetime' : datePickerMode}
+                        display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                        maximumDate={new Date()}
+                        onChange={handlePickerChange}
+                        locale="fr-CA"
+                      />
+                    )}
+                  </>
+                )
+              ) : (
+                <View style={styles.dateTimeBlock}>
+                  <View style={styles.dateTimeBlockRow}>
+                    <Ionicons name="calendar-outline" size={15} color={ACCENT} />
+                    <Text style={styles.dateTimeBlockDate}>{caughtDate}</Text>
+                  </View>
+                  <View style={styles.dateTimeBlockRow}>
+                    <Ionicons name="time-outline" size={15} color={TEXT_MUTED} />
+                    <Text style={styles.dateTimeBlockTime}>{caughtTime}</Text>
+                  </View>
+                </View>
+              )}
             </View>
           </View>
         </SectionCard>
@@ -481,12 +743,45 @@ export default function CatchDetailScreen() {
 
         {/* Section: Technique */}
         <SectionCard title="🎣 Technique">
-          <EditableRow
-            label="Leurre"
-            value={editing ? lure : catch_.lure ?? '—'}
-            editing={editing}
-            onChangeText={setLure}
-            placeholder="Leurre utilisé"
+          {editing ? (
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>Leurre</Text>
+              <TouchableOpacity
+                style={styles.lurePickerBtn}
+                onPress={() => setShowLurePicker(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={lure ? styles.lurePickerBtnValue : styles.lurePickerBtnPlaceholder}>
+                  {lure || 'Choisir un leurre…'}
+                </Text>
+                <Text style={styles.lurePickerBtnChevron}>›</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <InfoRow label="Leurre" value={catch_.lure ?? '—'} />
+          )}
+          <LurePicker
+            visible={showLurePicker}
+            selectedLureName={lure || null}
+            userLures={userLures}
+            onSelect={(l) => { setLure(l.name); setShowLurePicker(false); }}
+            onCreateNew={() => { setShowLurePicker(false); setShowLureForm(true); }}
+            onClose={() => setShowLurePicker(false)}
+          />
+          <LureFormModal
+            visible={showLureForm}
+            onSave={async (data) => {
+              if (!user?.id) return;
+              setShowLureForm(false);
+              const created = await createUserLure(user.id, data);
+              if (created) {
+                const updated = [...userLures, created].sort((a, b) => a.name.localeCompare(b.name));
+                setUserLures(updated);
+                await setCachedLures(user.id, updated);
+                setLure(created.name);
+              }
+            }}
+            onClose={() => setShowLureForm(false)}
           />
           <EditableRow
             label="Profondeur (pi)"
@@ -506,19 +801,23 @@ export default function CatchDetailScreen() {
         <SectionCard title="🌤 Météo">
           <InfoRow
             label="Ciel"
-            value={catch_.weather_conditions ?? '—'}
+            value={(editing ? editConditions : catch_.weather_conditions) ?? '—'}
           />
           <InfoRow
             label="Température"
-            value={catch_.temperature_c != null ? `${catch_.temperature_c.toFixed(1)} °C` : '—'}
+            value={
+              (editing ? editTempC : catch_.temperature_c) != null
+                ? `${(editing ? editTempC : catch_.temperature_c)!.toFixed(1)} °C`
+                : '—'
+            }
           />
           <InfoRow
             label="Vent"
             value={
-              catch_.wind_speed_kmh != null
-                ? catch_.wind_direction_deg != null
-                  ? `${windDegToCompass(catch_.wind_direction_deg)} ${catch_.wind_speed_kmh.toFixed(1)} km/h`
-                  : `${catch_.wind_speed_kmh.toFixed(1)} km/h`
+              (editing ? editWindKmh : catch_.wind_speed_kmh) != null
+                ? (editing ? editWindDeg : catch_.wind_direction_deg) != null
+                  ? `${windDegToCompass((editing ? editWindDeg : catch_.wind_direction_deg)!)} ${(editing ? editWindKmh : catch_.wind_speed_kmh)!.toFixed(1)} km/h`
+                  : `${(editing ? editWindKmh : catch_.wind_speed_kmh)!.toFixed(1)} km/h`
                 : '—'
             }
           />
@@ -618,6 +917,7 @@ export default function CatchDetailScreen() {
                 if (pickerCoord) {
                   setLatitude(pickerCoord.latitude);
                   setLongitude(pickerCoord.longitude);
+                  refreshEditWeather(pickerCoord.latitude, pickerCoord.longitude);
                 }
                 setShowLocationPicker(false);
               }}
@@ -876,6 +1176,33 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
     fontWeight: '700',
+  },
+  lurePickerBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surface2,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: BORDER,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  lurePickerBtnValue: {
+    fontSize: 14,
+    color: TEXT_PRIMARY,
+    flex: 1,
+  },
+  lurePickerBtnPlaceholder: {
+    fontSize: 14,
+    color: TEXT_MUTED,
+    flex: 1,
+  },
+  lurePickerBtnChevron: {
+    fontSize: 16,
+    color: ACCENT,
+    marginLeft: 8,
   },
 
   // Inline input
@@ -1139,5 +1466,68 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
+  },
+
+  // Bloc date/heure — mode vue (read-only)
+  dateTimeBlock: {
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: CARD_BG,
+    borderLeftWidth: 3,
+    borderLeftColor: ACCENT,
+    gap: 4,
+  },
+  dateTimeBlockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dateTimeBlockDate: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: TEXT_PRIMARY,
+  },
+  dateTimeBlockTime: {
+    fontSize: 13,
+    color: TEXT_MUTED,
+  },
+
+  // Bouton date/heure — mode édition
+  dateTimeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: colors.accentSubtle,
+    borderWidth: 1,
+    borderColor: colors.accentGlow,
+  },
+  dateTimeBtnIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  dateTimeBtnText: {
+    flex: 1,
+  },
+  dateTimeBtnDate: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: ACCENT,
+  },
+  dateTimeBtnTime: {
+    fontSize: 12,
+    color: ACCENT,
+    marginTop: 2,
+    opacity: 0.8,
+  },
+  dateTimeBtnChevron: {
+    fontSize: 20,
+    color: ACCENT,
+    marginLeft: 6,
+    fontWeight: '300',
   },
 });

@@ -51,6 +51,25 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE FUNCTION handle_new_user();
 ```
 
+### user_lures — Leurres personnalisés par utilisateur
+```sql
+CREATE TABLE user_lures (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  size        TEXT,
+  color       TEXT,
+  notes       TEXT,
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE user_lures ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "user_lures_own" ON user_lures
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+```
+
 ### maps — Cartes (personnelles et partagées)
 ```sql
 CREATE TABLE maps (
@@ -262,6 +281,9 @@ CREATE POLICY "Users can create shares for own maps"
 -- Ajout des colonnes météo détaillées (v2)
 ALTER TABLE catches ADD COLUMN IF NOT EXISTS wind_direction_deg INTEGER;
 ALTER TABLE catches ADD COLUMN IF NOT EXISTS weather_conditions TEXT;
+
+-- Lien vers le voyage local (v3)
+ALTER TABLE catches ADD COLUMN IF NOT EXISTS trip_id TEXT;
 ```
 
 ---

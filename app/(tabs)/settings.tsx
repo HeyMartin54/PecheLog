@@ -98,6 +98,20 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      {/* Équipement */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Équipement</Text>
+        <View style={styles.card}>
+          <TouchableOpacity style={[styles.settingRow, { borderBottomWidth: 0 }]} onPress={() => router.push('/my-lures')} activeOpacity={0.8}>
+            <View style={styles.settingLeft}>
+              <Ionicons name="fish" size={20} color={colors.accent} />
+              <Text style={styles.settingLabel}>Mes leurres</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {/* Couleurs des marqueurs */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Couleurs des marqueurs</Text>

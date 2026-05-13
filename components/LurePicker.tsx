@@ -1,11 +1,6 @@
-// ─── LurePicker ───────────────────────────────────────────────────────────────
-// Modal de sélection de leurre avec grille visuelle, filtres par catégorie,
-// barre de recherche et ajout de leurre custom.
-
-import { useState, useMemo, useCallback, memo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
   FlatList,
-  Image,
   Modal,
   Platform,
   StyleSheet,
@@ -13,166 +8,70 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  ScrollView,
   KeyboardAvoidingView,
-  Alert,
 } from 'react-native';
-import {
-  ALL_LURE_CATEGORIES,
-  LURES_CATALOG,
-  filterLures,
-  type LureCategory,
-  type LureConfig,
-} from '@/lib/lures';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import type { UserLure } from '@/lib/lureStorage';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
 type Props = {
   visible: boolean;
-  /** Nom du leurre actuellement sélectionné (peut être un custom) */
-  selectedLure: string | null;
-  /** Leurres custom ajoutés par l'utilisateur (noms simples) */
-  customLures?: string[];
-  onSelect: (lureName: string) => void;
-  onAddCustom?: (lureName: string) => void;
+  selectedLureName: string | null;
+  selectedLureNames?: string[];
+  userLures: UserLure[];
+  onSelect: (lure: UserLure) => void;
+  onCreateNew: () => void;
   onClose: () => void;
 };
 
-// ─── Constantes ───────────────────────────────────────────────────────────────
-const CARD_GAP = 10;
-const NUM_COLUMNS = 2;
-
-// ─── Vignette avec fallback emoji si l'image ne charge pas ────────────────────
-const LureThumbnail = memo(function LureThumbnail({
-  photoUrl,
-  emoji,
-  bgColor,
-}: {
-  photoUrl: string | null;
-  emoji: string;
-  bgColor: string;
-}) {
-  const [imgError, setImgError] = useState(false);
-
-  if (photoUrl && !imgError) {
-    return (
-      <Image
-        source={{ uri: photoUrl }}
-        style={[styles.cardPhoto, { backgroundColor: bgColor }]}
-        resizeMode="cover"
-        onError={() => setImgError(true)}
-      />
-    );
-  }
-
-  return (
-    <View style={[styles.cardEmoji, { backgroundColor: bgColor }]}>
-      <Text style={styles.cardEmojiText}>{emoji}</Text>
-    </View>
-  );
-});
-
-// ─── Composant principal ──────────────────────────────────────────────────────
 export default function LurePicker({
   visible,
-  selectedLure,
-  customLures = [],
+  selectedLureName,
+  selectedLureNames,
+  userLures,
   onSelect,
-  onAddCustom,
+  onCreateNew,
   onClose,
 }: Props) {
   const [search, setSearch] = useState('');
-  const [activeCategory, setActiveCategory] = useState<LureCategory | null>(null);
-  const [customInput, setCustomInput] = useState('');
-  const [showCustomInput, setShowCustomInput] = useState(false);
 
-  // Réinitialiser la recherche à l'ouverture
   const handleClose = useCallback(() => {
     setSearch('');
-    setActiveCategory(null);
-    setShowCustomInput(false);
-    setCustomInput('');
     onClose();
   }, [onClose]);
 
-  // Résultats filtrés du catalogue
-  const catalogResults = useMemo(
-    () => filterLures(search, activeCategory),
-    [search, activeCategory],
-  );
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return userLures;
+    return userLures.filter(
+      (l) =>
+        l.name.toLowerCase().includes(q) ||
+        (l.color ?? '').toLowerCase().includes(q) ||
+        (l.size ?? '').toLowerCase().includes(q),
+    );
+  }, [userLures, search]);
 
-  // Leurres custom filtrés
-  const filteredCustom = useMemo(() => {
-    if (activeCategory) return []; // Les customs n'ont pas de catégorie
-    if (!search.trim()) return customLures;
-    const q = search.toLowerCase();
-    return customLures.filter((l) => l.toLowerCase().includes(q));
-  }, [customLures, search, activeCategory]);
-
-  const handleAddCustom = () => {
-    const name = customInput.trim();
-    if (!name) return;
-    if (LURES_CATALOG.some((l) => l.name.toLowerCase() === name.toLowerCase())) {
-      Alert.alert('Leurre existant', 'Ce leurre existe déjà dans le catalogue.');
-      return;
-    }
-    onAddCustom?.(name);
-    onSelect(name);
-    setCustomInput('');
-    setShowCustomInput(false);
-    handleClose();
-  };
-
-  const renderCatalogItem = useCallback(
-    ({ item }: { item: LureConfig }) => {
-      const isSelected = selectedLure === item.name;
+  const renderItem = useCallback(
+    ({ item }: { item: UserLure }) => {
+      const isSelected = selectedLureNames != null
+        ? selectedLureNames.includes(item.name)
+        : selectedLureName === item.name;
+      const subtitle = [item.size, item.color].filter(Boolean).join(' · ');
       return (
         <TouchableOpacity
-          style={[styles.card, isSelected && styles.cardSelected]}
-          onPress={() => { onSelect(item.name); handleClose(); }}
+          style={[styles.row, isSelected && styles.rowSelected]}
+          onPress={() => { onSelect(item); if (selectedLureNames == null) handleClose(); }}
           activeOpacity={0.8}
         >
-          {/* Photo ou emoji (avec fallback automatique) */}
-          <LureThumbnail
-            photoUrl={item.photoUrl}
-            emoji={item.emoji}
-            bgColor={item.bgColor}
-          />
-          {/* Infos */}
-          <View style={styles.cardInfo}>
-            <Text style={styles.cardName} numberOfLines={2}>{item.name}</Text>
-            <Text style={styles.cardBrand} numberOfLines={1}>{item.brand}</Text>
+          <View style={[styles.lureIcon, isSelected && styles.lureIconSelected]}>
+            <Text style={styles.lureIconText}>🪝</Text>
           </View>
-          {/* Badge catégorie */}
-          <View style={[styles.categoryDot, { backgroundColor: item.color }]} />
-          {/* Checkmark si sélectionné */}
-          {isSelected && (
-            <View style={styles.checkBadge}>
-              <Text style={styles.checkBadgeText}>✓</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-      );
-    },
-    [selectedLure, onSelect, handleClose],
-  );
-
-  const renderCustomItem = useCallback(
-    (name: string) => {
-      const isSelected = selectedLure === name;
-      return (
-        <TouchableOpacity
-          key={name}
-          style={[styles.card, styles.cardCustom, isSelected && styles.cardSelected]}
-          onPress={() => { onSelect(name); handleClose(); }}
-          activeOpacity={0.8}
-        >
-          <View style={[styles.cardEmoji, { backgroundColor: 'rgba(255,255,255,0.06)' }]}>
-            <Text style={styles.cardEmojiText}>🪝</Text>
-          </View>
-          <View style={styles.cardInfo}>
-            <Text style={styles.cardName} numberOfLines={2}>{name}</Text>
-            <Text style={styles.cardBrand}>Custom</Text>
+          <View style={styles.rowInfo}>
+            <Text style={[styles.rowName, isSelected && styles.rowNameSelected]} numberOfLines={1}>
+              {item.name}
+            </Text>
+            {!!subtitle && (
+              <Text style={styles.rowSubtitle} numberOfLines={1}>{subtitle}</Text>
+            )}
           </View>
           {isSelected && (
             <View style={styles.checkBadge}>
@@ -182,7 +81,7 @@ export default function LurePicker({
         </TouchableOpacity>
       );
     },
-    [selectedLure, onSelect, handleClose],
+    [selectedLureName, selectedLureNames, onSelect, handleClose],
   );
 
   return (
@@ -196,7 +95,7 @@ export default function LurePicker({
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        {/* ── En-tête ─────────────────────────────────────────────────────── */}
+        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>🪝 Choisir un leurre</Text>
           <TouchableOpacity onPress={handleClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -204,12 +103,12 @@ export default function LurePicker({
           </TouchableOpacity>
         </View>
 
-        {/* ── Barre de recherche ──────────────────────────────────────────── */}
+        {/* Recherche */}
         <View style={styles.searchRow}>
           <Text style={styles.searchIcon}>🔍</Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Rechercher un leurre ou une marque…"
+            placeholder="Rechercher par nom, couleur, grosseur…"
             placeholderTextColor={colors.textMuted}
             value={search}
             onChangeText={setSearch}
@@ -223,116 +122,49 @@ export default function LurePicker({
           )}
         </View>
 
-        {/* ── Filtres catégorie ───────────────────────────────────────────── */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.categoryScroll}
-          contentContainerStyle={styles.categoryScrollContent}
-        >
-          <TouchableOpacity
-            style={[styles.categoryChip, activeCategory === null && styles.categoryChipActive]}
-            onPress={() => setActiveCategory(null)}
-          >
-            <Text style={[styles.categoryChipText, activeCategory === null && styles.categoryChipTextActive]}>
-              Tous
-            </Text>
-          </TouchableOpacity>
-          {ALL_LURE_CATEGORIES.map((cat) => (
-            <TouchableOpacity
-              key={cat}
-              style={[styles.categoryChip, activeCategory === cat && styles.categoryChipActive]}
-              onPress={() => setActiveCategory(activeCategory === cat ? null : cat)}
-            >
-              <Text style={[styles.categoryChipText, activeCategory === cat && styles.categoryChipTextActive]}>
-                {cat}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        {/* ── Grille de leurres ───────────────────────────────────────────── */}
+        {/* Liste */}
         <FlatList
-          data={catalogResults}
+          data={filtered}
           keyExtractor={(item) => item.id}
-          renderItem={renderCatalogItem}
-          numColumns={NUM_COLUMNS}
-          columnWrapperStyle={styles.gridRow}
-          contentContainerStyle={styles.gridContent}
+          renderItem={renderItem}
+          contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          ListHeaderComponent={
-            filteredCustom.length > 0 ? (
-              <View style={styles.customSection}>
-                <Text style={styles.sectionLabel}>MES LEURRES</Text>
-                <View style={styles.gridRow}>
-                  {filteredCustom.map((name) => renderCustomItem(name))}
-                </View>
-                <Text style={styles.sectionLabel}>CATALOGUE</Text>
-              </View>
-            ) : null
-          }
+          keyboardShouldPersistTaps="handled"
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>🔍</Text>
-              <Text style={styles.emptyText}>Aucun leurre trouvé</Text>
+              <Text style={styles.emptyIcon}>🪝</Text>
+              <Text style={styles.emptyText}>
+                {userLures.length === 0 ? 'Aucun leurre dans votre boîte' : 'Aucun résultat'}
+              </Text>
               <Text style={styles.emptySubtext}>
-                Essaie d'autres mots-clés ou ajoute un leurre custom ci-dessous.
+                {userLures.length === 0
+                  ? 'Créez votre premier leurre ci-dessous.'
+                  : 'Essayez d\'autres mots-clés.'}
               </Text>
             </View>
           }
         />
 
-        {/* ── Ajout leurre custom ─────────────────────────────────────────── */}
-        <View style={styles.customFooter}>
-          {showCustomInput ? (
-            <View style={styles.customInputRow}>
-              <TextInput
-                style={styles.customTextInput}
-                placeholder="Nom du leurre custom…"
-                placeholderTextColor={colors.textMuted}
-                value={customInput}
-                onChangeText={setCustomInput}
-                onSubmitEditing={handleAddCustom}
-                returnKeyType="done"
-                autoFocus
-              />
-              <TouchableOpacity
-                style={[styles.customAddBtn, !customInput.trim() && styles.customAddBtnDisabled]}
-                onPress={handleAddCustom}
-                disabled={!customInput.trim()}
-              >
-                <Text style={styles.customAddBtnText}>Ajouter</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => { setShowCustomInput(false); setCustomInput(''); }}
-                style={styles.customCancelBtn}
-              >
-                <Text style={styles.customCancelBtnText}>Annuler</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.addCustomBtn}
-              onPress={() => setShowCustomInput(true)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.addCustomBtnText}>+ Ajouter un leurre custom</Text>
-            </TouchableOpacity>
-          )}
+        {/* Bouton créer */}
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={styles.createBtn}
+            onPress={() => { handleClose(); onCreateNew(); }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.createBtnText}>＋ Créer un nouveau leurre</Text>
+          </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
     </Modal>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bg,
   },
-
-  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -352,8 +184,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     paddingHorizontal: 4,
   },
-
-  // Recherche
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -384,130 +214,70 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 14,
   },
-
-  // Catégories
-  categoryScroll: {
-    flexShrink: 0,
-    marginBottom: spacing.sm,
-  },
-  categoryScrollContent: {
+  listContent: {
     paddingHorizontal: spacing.lg,
-    gap: spacing.sm,
+    paddingVertical: spacing.sm,
   },
-  categoryChip: {
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
-    paddingVertical: 7,
-    borderRadius: radius.full,
-    backgroundColor: colors.surface2,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  categoryChipActive: {
-    backgroundColor: colors.accentSubtle,
-    borderColor: colors.accent,
-  },
-  categoryChipText: {
-    fontSize: 13,
-    color: colors.textMuted,
-    fontWeight: '500',
-  },
-  categoryChipTextActive: {
-    color: colors.accent,
-    fontWeight: '600',
-  },
-
-  // Grille
-  gridContent: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
-  },
-  gridRow: {
-    gap: CARD_GAP,
-    marginBottom: CARD_GAP,
-  },
-
-  // Carte leurre
-  card: {
-    flex: 1,
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
-    overflow: 'hidden',
-    position: 'relative',
+    marginBottom: spacing.sm,
+    gap: spacing.md,
   },
-  cardSelected: {
+  rowSelected: {
     borderColor: colors.accent,
-    borderWidth: 2,
+    backgroundColor: colors.accentSubtle,
   },
-  cardCustom: {
-    borderStyle: 'dashed',
-  },
-  cardPhoto: {
-    width: '100%',
-    height: 90,
-  },
-  cardEmoji: {
-    width: '100%',
-    height: 90,
+  lureIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: colors.surface2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardEmojiText: {
-    fontSize: 38,
+  lureIconSelected: {
+    backgroundColor: colors.accentStrong,
   },
-  cardInfo: {
-    padding: spacing.sm,
+  lureIconText: {
+    fontSize: 20,
   },
-  cardName: {
-    ...typography.label,
+  rowInfo: {
+    flex: 1,
+  },
+  rowName: {
+    fontSize: 15,
+    fontWeight: '500',
     color: colors.textPrimary,
-    fontSize: 13,
-    lineHeight: 17,
     marginBottom: 2,
   },
-  cardBrand: {
-    fontSize: 11,
-    color: colors.textMuted,
-    fontWeight: '400',
+  rowNameSelected: {
+    color: colors.accent,
+    fontWeight: '600',
   },
-  categoryDot: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  rowSubtitle: {
+    fontSize: 12,
+    color: colors.textMuted,
   },
   checkBadge: {
-    position: 'absolute',
-    top: 6,
-    left: 6,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkBadgeText: {
-    color: '#0B1A2B',
+    color: colors.bg,
     fontSize: 13,
     fontWeight: '700',
   },
-
-  // Section labels
-  sectionLabel: {
-    ...typography.caption,
-    color: colors.textSubtle,
-    marginBottom: spacing.sm,
-    marginTop: spacing.sm,
-  },
-  customSection: {
-    marginBottom: spacing.sm,
-  },
-
-  // État vide
   emptyState: {
     alignItems: 'center',
     paddingVertical: spacing.xxxl,
@@ -527,16 +297,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: spacing.xl,
   },
-
-  // Footer custom
-  customFooter: {
+  footer: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderTopWidth: 1,
     borderTopColor: colors.border,
     backgroundColor: colors.bg,
   },
-  addCustomBtn: {
+  createBtn: {
     paddingVertical: spacing.md,
     alignItems: 'center',
     borderRadius: radius.md,
@@ -544,51 +312,9 @@ const styles = StyleSheet.create({
     borderColor: colors.borderStrong,
     borderStyle: 'dashed',
   },
-  addCustomBtnText: {
+  createBtnText: {
     color: colors.accent,
     fontSize: 14,
     fontWeight: '600',
-  },
-  customInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  customTextInput: {
-    flex: 1,
-    backgroundColor: colors.surface2,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    height: 44,
-    color: colors.textPrimary,
-    fontSize: 14,
-  },
-  customAddBtn: {
-    backgroundColor: colors.accent,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.md,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  customAddBtnDisabled: {
-    opacity: 0.4,
-  },
-  customAddBtnText: {
-    color: '#0B1A2B',
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  customCancelBtn: {
-    paddingHorizontal: spacing.sm,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  customCancelBtnText: {
-    color: colors.textMuted,
-    fontSize: 14,
   },
 });

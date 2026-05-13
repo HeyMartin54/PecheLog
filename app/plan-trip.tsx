@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,13 +16,21 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
-import { getLureByName } from '@/lib/lures';
+import {
+  createUserLure,
+  loadLuresWithCache,
+  setCachedLures,
+  type UserLure,
+} from '@/lib/lureStorage';
 import { SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   addFrequentCompanions,
   clearPrefillTrip,
+  loadActiveTrip,
   loadFrequentCompanions,
   loadPrefillTrip,
   saveActiveTrip,
@@ -38,6 +46,9 @@ function generateId(): string {
 export default function PlanTripScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
+  const isEditMode = mode === 'edit';
 
   const [lakes, setLakes] = useState<TripLake[]>([{ name: '', targetSpecies: [] }]);
   const [companions, setCompanions] = useState<string[]>([]);
@@ -45,19 +56,40 @@ export default function PlanTripScreen() {
   const [frequentCompanions, setFrequentCompanions] = useState<string[]>([]);
   const [luresSelected, setLuresSelected] = useState<string[]>([]);
   const [showLurePicker, setShowLurePicker] = useState(false);
+  const [showLureForm, setShowLureForm] = useState(false);
+  const [userLures, setUserLures] = useState<UserLure[]>([]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
 
+  // Preserved from the active trip in edit mode
+  const [editTripId, setEditTripId] = useState<string | null>(null);
+  const [editTripStartedAt, setEditTripStartedAt] = useState<string | null>(null);
+
   const companionInputRef = useRef<TextInput>(null);
 
-  // Load frequent companions and check for prefill
+  useEffect(() => {
+    if (!user?.id) return;
+    loadLuresWithCache(user.id).then(setUserLures);
+  }, [user?.id]);
+
+  // Load frequent companions, then either active trip (edit) or prefill (relaunch) or GPS
   useEffect(() => {
     const init = async () => {
       const [freq, prefill] = await Promise.all([loadFrequentCompanions(), loadPrefillTrip()]);
       setFrequentCompanions(freq);
 
-      if (prefill) {
+      if (isEditMode) {
+        const activeTrip = await loadActiveTrip();
+        if (activeTrip) {
+          setEditTripId(activeTrip.id);
+          setEditTripStartedAt(activeTrip.startedAt);
+          setLakes(activeTrip.lakes.length > 0 ? activeTrip.lakes : [{ name: '', targetSpecies: [] }]);
+          setCompanions(activeTrip.companions);
+          setLuresSelected(activeTrip.luresSelected);
+          setNotes(activeTrip.notes ?? '');
+        }
+      } else if (prefill) {
         await clearPrefillTrip();
         setLakes(prefill.lakes.length > 0 ? prefill.lakes : [{ name: '', targetSpecies: [] }]);
         setCompanions(prefill.companions);
@@ -69,7 +101,7 @@ export default function PlanTripScreen() {
       }
     };
     init();
-  }, []);
+  }, [isEditMode]);
 
   const fetchGpsLakeName = async () => {
     setLocationLoading(true);
@@ -146,11 +178,10 @@ export default function PlanTripScreen() {
 
   // ── Lure helpers ────────────────────────────────────────────────────────────
 
-  const handleLureConfirm = (lureName: string) => {
+  const handleLureConfirm = (lure: UserLure) => {
     setLuresSelected((prev) =>
-      prev.includes(lureName) ? prev.filter((n) => n !== lureName) : [...prev, lureName],
+      prev.includes(lure.name) ? prev.filter((n) => n !== lure.name) : [...prev, lure.name],
     );
-    setShowLurePicker(false);
   };
 
   const removeLure = (lureName: string) => {
@@ -162,7 +193,7 @@ export default function PlanTripScreen() {
   const handleStart = async () => {
     const validLakes = lakes.filter((l) => l.name.trim());
     if (validLakes.length === 0) {
-      Alert.alert('Lac requis', 'Ajoute au moins un lac pour démarrer le voyage.');
+      Alert.alert('Lac requis', 'Ajoute au moins un lac pour continuer.');
       return;
     }
 
@@ -170,8 +201,8 @@ export default function PlanTripScreen() {
     try {
       await addFrequentCompanions(companions);
       await saveActiveTrip({
-        id: generateId(),
-        startedAt: new Date().toISOString(),
+        id: isEditMode && editTripId ? editTripId : generateId(),
+        startedAt: isEditMode && editTripStartedAt ? editTripStartedAt : new Date().toISOString(),
         lakes: validLakes,
         companions,
         luresSelected,
@@ -180,7 +211,7 @@ export default function PlanTripScreen() {
       router.back();
     } catch (e) {
       console.warn('[PlanTrip] Erreur', e);
-      Alert.alert('Erreur', "Impossible de démarrer le voyage. Réessaie.");
+      Alert.alert('Erreur', isEditMode ? 'Impossible de modifier le voyage. Réessaie.' : "Impossible de démarrer le voyage. Réessaie.");
     } finally {
       setSaving(false);
     }
@@ -206,7 +237,7 @@ export default function PlanTripScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton} activeOpacity={0.7}>
             <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Planifier un voyage</Text>
+          <Text style={styles.headerTitle}>{isEditMode ? 'Modifier le voyage' : 'Planifier un voyage'}</Text>
           <View style={{ width: 36 }} />
         </View>
 
@@ -363,8 +394,8 @@ export default function PlanTripScreen() {
             <ActivityIndicator color={colors.bg} />
           ) : (
             <>
-              <Ionicons name="navigate" size={20} color={colors.bg} />
-              <Text style={styles.startButtonText}>Démarrer le voyage</Text>
+              <Ionicons name={isEditMode ? 'checkmark' : 'navigate'} size={20} color={colors.bg} />
+              <Text style={styles.startButtonText}>{isEditMode ? 'Enregistrer les modifications' : 'Démarrer le voyage'}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -373,10 +404,27 @@ export default function PlanTripScreen() {
       {/* ── Lure picker modal ───────────────────────────────────────── */}
       <LurePicker
         visible={showLurePicker}
-        selectedLure={null}
+        selectedLureName={null}
+        selectedLureNames={luresSelected}
+        userLures={userLures}
         onSelect={handleLureConfirm}
+        onCreateNew={() => { setShowLurePicker(false); setShowLureForm(true); }}
         onClose={() => setShowLurePicker(false)}
-        customLures={[]}
+      />
+      <LureFormModal
+        visible={showLureForm}
+        onSave={async (data) => {
+          if (!user?.id) return;
+          setShowLureForm(false);
+          const created = await createUserLure(user.id, data);
+          if (created) {
+            const updated = [...userLures, created].sort((a, b) => a.name.localeCompare(b.name));
+            setUserLures(updated);
+            await setCachedLures(user.id, updated);
+            setLuresSelected((prev) => [...prev, created.name]);
+          }
+        }}
+        onClose={() => setShowLureForm(false)}
       />
     </KeyboardAvoidingView>
   );
@@ -387,22 +435,19 @@ export default function PlanTripScreen() {
 function LureChipList({ lureNames, onRemove }: { lureNames: string[]; onRemove: (name: string) => void }) {
   return (
     <View style={[styles.chipRow, { marginBottom: spacing.md }]}>
-      {lureNames.map((name) => {
-        const lure = getLureByName(name);
-        return (
-          <TouchableOpacity
-            key={name}
-            style={[styles.chip, styles.chipSelected]}
-            onPress={() => onRemove(name)}
-            activeOpacity={0.75}
-          >
-            <Text style={[styles.chipText, { color: colors.accent }]}>
-              {lure?.emoji ?? '🪝'} {name}
-            </Text>
-            <Ionicons name="close" size={12} color={colors.accent} />
-          </TouchableOpacity>
-        );
-      })}
+      {lureNames.map((name) => (
+        <TouchableOpacity
+          key={name}
+          style={[styles.chip, styles.chipSelected]}
+          onPress={() => onRemove(name)}
+          activeOpacity={0.75}
+        >
+          <Text style={[styles.chipText, { color: colors.accent }]}>
+            🪝 {name}
+          </Text>
+          <Ionicons name="close" size={12} color={colors.accent} />
+        </TouchableOpacity>
+      ))}
     </View>
   );
 }

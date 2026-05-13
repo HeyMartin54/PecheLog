@@ -88,6 +88,7 @@ function RootLayoutNav() {
               <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
               <Stack.Screen name="catch-detail" options={{ headerShown: false }} />
               <Stack.Screen name="plan-trip" options={{ headerShown: false }} />
+              <Stack.Screen name="my-lures" options={{ headerShown: false }} />
               <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
             </Stack>
             <SyncManager />

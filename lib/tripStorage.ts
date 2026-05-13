@@ -92,6 +92,14 @@ export async function loadLastCatchSettings(): Promise<LastCatchSettings | null>
   return raw ? JSON.parse(raw) : null;
 }
 
+export async function deleteTripFromHistory(tripId: string): Promise<void> {
+  const raw = await AsyncStorage.getItem(TRIP_HISTORY_KEY);
+  if (!raw) return;
+  const history: Trip[] = JSON.parse(raw);
+  const filtered = history.filter((t) => t.id !== tripId);
+  await AsyncStorage.setItem(TRIP_HISTORY_KEY, JSON.stringify(filtered));
+}
+
 // ─── Compagnons fréquents ─────────────────────────────────────────────────────
 
 export async function addFrequentCompanions(names: string[]): Promise<void> {

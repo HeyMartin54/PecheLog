@@ -13,12 +13,15 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import LurePicker from '@/components/LurePicker';
 import { useAuth } from '@/contexts/AuthContext';
+import { loadLuresWithCache, type UserLure } from '@/lib/lureStorage';
 import { enqueueOfflineCatch } from '@/lib/offlineSync';
-import { getSpeciesConfig } from '@/lib/species';
+import { getSpeciesConfig, SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import {
   type Trip,
+  deleteTripFromHistory,
   endActiveTrip,
   loadActiveTrip,
   loadLastCatchSettings,
@@ -27,7 +30,6 @@ import {
   savePrefillTrip,
 } from '@/lib/tripStorage';
 import { supabase } from '@/lib/supabase';
-import { getLureByName } from '@/lib/lures';
 
 type QuickCatchState = 'idle' | 'loading' | 'success';
 
@@ -69,6 +71,11 @@ export default function TripScreen() {
   const [tripHistory, setTripHistory] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [quickState, setQuickState] = useState<QuickCatchState>('idle');
+  const [ending, setEnding] = useState(false);
+  const [quickSpecies, setQuickSpecies] = useState<string | null>(null);
+  const [quickLure, setQuickLure] = useState<string | null>(null);
+  const [userLures, setUserLures] = useState<UserLure[]>([]);
+  const [showLurePickerForQuick, setShowLurePickerForQuick] = useState(false);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useFocusEffect(
@@ -81,36 +88,59 @@ export default function TripScreen() {
           setActiveTrip(active);
           setTripHistory(history);
           setLoading(false);
+          if (active) {
+            const firstSpecies = active.lakes.flatMap((l) => l.targetSpecies)[0] ?? null;
+            setQuickSpecies((prev) => prev ?? firstSpecies);
+            setQuickLure((prev) => prev ?? active.luresSelected[0] ?? null);
+          }
         }
       };
       refresh();
+      if (user?.id) loadLuresWithCache(user.id).then(setUserLures);
       return () => { mounted = false; };
-    }, []),
+    }, [user?.id]),
   );
 
-  const handleEndTrip = () => {
-    Alert.alert(
-      'Terminer le voyage',
-      'Es-tu sûr de vouloir terminer ce voyage ? Il sera archivé dans ton historique.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Terminer',
-          style: 'destructive',
-          onPress: async () => {
-            await endActiveTrip();
-            setActiveTrip(null);
-            const history = await loadTripHistory();
-            setTripHistory(history);
-          },
-        },
-      ],
-    );
+  const handleEndTrip = async () => {
+    if (ending) return;
+    setEnding(true);
+    try {
+      await endActiveTrip();
+      setActiveTrip(null);
+      const history = await loadTripHistory();
+      setTripHistory(history);
+    } catch (e) {
+      console.warn('[TripScreen] handleEndTrip error:', e);
+    } finally {
+      setEnding(false);
+    }
   };
 
   const handleRelaunch = async (trip: Trip) => {
     await savePrefillTrip(trip);
     router.push('/plan-trip');
+  };
+
+  const handleEditTrip = () => {
+    router.push({ pathname: '/plan-trip', params: { mode: 'edit' } });
+  };
+
+  const handleOpenDetailCatch = () => {
+    router.push({
+      pathname: '/log-catch',
+      params: {
+        prefillSpecies: quickSpecies ?? '',
+        prefillLure: quickLure ?? '',
+        prefillTripId: activeTrip?.id ?? '',
+        returnTo: 'trip',
+      },
+    });
+  };
+
+  const handleDeleteTrip = async (tripId: string) => {
+    await deleteTripFromHistory(tripId);
+    const history = await loadTripHistory();
+    setTripHistory(history);
   };
 
   const handleQuickCatch = async () => {
@@ -130,27 +160,18 @@ export default function TripScreen() {
       });
 
       const last = await loadLastCatchSettings();
-      let species = last?.species;
-
-      if (!species && activeTrip) {
-        for (const lake of activeTrip.lakes) {
-          if (lake.targetSpecies.length > 0) {
-            species = lake.targetSpecies[0];
-            break;
-          }
-        }
-      }
+      const species = quickSpecies ?? last?.species ?? null;
 
       if (!species) {
         Alert.alert(
           'Espèce manquante',
-          "Utilise d'abord le formulaire complet pour enregistrer une prise, ou ajoute des espèces cibles à ton voyage.",
+          'Sélectionne une espèce dans la section "Prise rapide" de ton voyage.',
         );
         setQuickState('idle');
         return;
       }
 
-      const lure = last?.lure ?? (activeTrip?.luresSelected?.[0] ?? null);
+      const lure = quickLure ?? last?.lure ?? null;
 
       let tempC: number | null = null;
       let windKmh: number | null = null;
@@ -165,6 +186,7 @@ export default function TripScreen() {
       const payload = {
         user_id: user.id,
         map_id: null,
+        trip_id: activeTrip?.id ?? null,
         species,
         lure,
         latitude: loc.coords.latitude,
@@ -215,6 +237,7 @@ export default function TripScreen() {
   }
 
   return (
+    <>
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + 32 }]}
@@ -226,8 +249,16 @@ export default function TripScreen() {
         <ActiveTripView
           trip={activeTrip}
           quickState={quickState}
+          ending={ending}
+          quickSpecies={quickSpecies}
+          quickLure={quickLure}
+          onSelectSpecies={setQuickSpecies}
+          onSelectLure={setQuickLure}
+          onOpenLurePicker={() => setShowLurePickerForQuick(true)}
           onQuickCatch={handleQuickCatch}
+          onOpenDetailCatch={handleOpenDetailCatch}
           onEndTrip={handleEndTrip}
+          onEdit={handleEditTrip}
         />
       ) : (
         <>
@@ -240,7 +271,12 @@ export default function TripScreen() {
             <View style={{ marginTop: spacing.xl }}>
               <Text style={styles.sectionLabel}>DERNIERS VOYAGES</Text>
               {tripHistory.map((trip) => (
-                <TripHistoryCard key={trip.id} trip={trip} onRelaunch={() => handleRelaunch(trip)} />
+                <TripHistoryCard
+                  key={trip.id}
+                  trip={trip}
+                  onRelaunch={() => handleRelaunch(trip)}
+                  onDelete={() => handleDeleteTrip(trip.id)}
+                />
               ))}
             </View>
           )}
@@ -257,6 +293,15 @@ export default function TripScreen() {
         </>
       )}
     </ScrollView>
+    <LurePicker
+      visible={showLurePickerForQuick}
+      selectedLureName={quickLure}
+      userLures={userLures}
+      onSelect={(lure) => { setQuickLure(lure.name); setShowLurePickerForQuick(false); }}
+      onCreateNew={() => setShowLurePickerForQuick(false)}
+      onClose={() => setShowLurePickerForQuick(false)}
+    />
+    </>
   );
 }
 
@@ -265,22 +310,49 @@ export default function TripScreen() {
 function ActiveTripView({
   trip,
   quickState,
+  ending,
+  quickSpecies,
+  quickLure,
+  onSelectSpecies,
+  onSelectLure,
+  onOpenLurePicker,
   onQuickCatch,
+  onOpenDetailCatch,
   onEndTrip,
+  onEdit,
 }: {
   trip: Trip;
   quickState: QuickCatchState;
+  ending: boolean;
+  quickSpecies: string | null;
+  quickLure: string | null;
+  onSelectSpecies: (s: string) => void;
+  onSelectLure: (l: string) => void;
+  onOpenLurePicker: () => void;
   onQuickCatch: () => void;
+  onOpenDetailCatch: () => void;
   onEndTrip: () => void;
+  onEdit: () => void;
 }) {
-  const allSpecies = trip.lakes.flatMap((l) => l.targetSpecies);
-  const uniqueSpecies = [...new Set(allSpecies)];
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+
+  // Espèces disponibles : celles du voyage, sinon toutes (sauf site prometteur)
+  const tripSpecies = [...new Set(trip.lakes.flatMap((l) => l.targetSpecies))];
+  const speciesList = tripSpecies.length > 0
+    ? tripSpecies
+    : Object.keys(SPECIES_CONFIG).filter((s) => s !== 'Site prometteur');
 
   return (
     <View>
-      <View style={styles.activeBadge}>
-        <View style={styles.activeDot} />
-        <Text style={styles.activeBadgeText}>VOYAGE EN COURS</Text>
+      <View style={styles.activeTripHeader}>
+        <View style={styles.activeBadge}>
+          <View style={styles.activeDot} />
+          <Text style={styles.activeBadgeText}>VOYAGE EN COURS</Text>
+        </View>
+        <TouchableOpacity onPress={onEdit} style={styles.editTripButton} activeOpacity={0.75}>
+          <Ionicons name="pencil-outline" size={14} color={colors.accent} />
+          <Text style={styles.editTripText}>Modifier</Text>
+        </TouchableOpacity>
       </View>
       <Text style={styles.tripDate}>Depuis le {formatTripDate(trip.startedAt)}</Text>
 
@@ -306,65 +378,102 @@ function ActiveTripView({
         </InfoCard>
       )}
 
-      {uniqueSpecies.length > 0 && (
-        <InfoCard label="ESPÈCES CIBLES" icon="fish-outline">
-          <View style={styles.chipRow}>
-            {uniqueSpecies.map((s) => {
-              const cfg = getSpeciesConfig(s);
-              return (
-                <View key={s} style={[styles.chip, { backgroundColor: cfg.bgColor, borderColor: cfg.color + '40' }]}>
-                  <Text style={[styles.chipText, { color: cfg.color }]}>{s}</Text>
-                </View>
-              );
-            })}
-          </View>
-        </InfoCard>
-      )}
-
-      {trip.luresSelected.length > 0 && (
-        <InfoCard label="LEURRES AMENÉS" icon="ellipsis-horizontal-circle-outline">
-          <View style={styles.chipRow}>
-            {trip.luresSelected.map((name) => {
-              const lure = getLureByName(name);
-              return (
-                <View key={name} style={styles.chip}>
-                  <Text style={styles.chipText}>{lure?.emoji ?? '🪝'} {name}</Text>
-                </View>
-              );
-            })}
-          </View>
-        </InfoCard>
-      )}
-
       {trip.notes ? (
         <InfoCard label="NOTES" icon="document-text-outline">
           <Text style={styles.notesText}>{trip.notes}</Text>
         </InfoCard>
       ) : null}
 
-      <TouchableOpacity
-        style={[styles.quickButton, quickState === 'success' && styles.quickButtonSuccess]}
-        onPress={quickState === 'idle' ? onQuickCatch : undefined}
-        activeOpacity={0.85}
-      >
-        {quickState === 'loading' ? (
-          <ActivityIndicator color={colors.bg} size="small" />
-        ) : quickState === 'success' ? (
-          <>
-            <Ionicons name="checkmark-circle" size={24} color={colors.bg} />
-            <Text style={styles.quickButtonText}>Prise enregistrée !</Text>
-          </>
-        ) : (
-          <>
-            <Ionicons name="fish" size={24} color={colors.bg} />
-            <Text style={styles.quickButtonText}>Prise rapide</Text>
-          </>
-        )}
-      </TouchableOpacity>
+      {/* ── Sélection prise rapide ─────────────────────────────────── */}
+      <InfoCard label="PRISE RAPIDE" icon="flash-outline">
+        <Text style={styles.quickSelectLabel}>ESPÈCE</Text>
+        <View style={styles.chipRow}>
+          {speciesList.map((s) => {
+            const cfg = getSpeciesConfig(s);
+            const isSelected = quickSpecies === s;
+            return (
+              <TouchableOpacity
+                key={s}
+                style={[styles.chip, isSelected && { backgroundColor: cfg.bgColor, borderColor: cfg.color }]}
+                onPress={() => onSelectSpecies(s)}
+                activeOpacity={0.75}
+              >
+                {isSelected && <Ionicons name="checkmark" size={11} color={cfg.color} />}
+                <Text style={[styles.chipText, isSelected && { color: cfg.color, fontWeight: '600' }]}>{s}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
-      <TouchableOpacity style={styles.endTripButton} onPress={onEndTrip} activeOpacity={0.75}>
-        <Text style={styles.endTripText}>Terminer le voyage</Text>
-      </TouchableOpacity>
+        <Text style={[styles.quickSelectLabel, { marginTop: spacing.md }]}>LEURRE</Text>
+        <View style={styles.chipRow}>
+          {trip.luresSelected.map((name) => {
+            const isSelected = quickLure === name;
+            return (
+              <TouchableOpacity
+                key={name}
+                style={[styles.chip, isSelected && { backgroundColor: colors.accentSubtle, borderColor: colors.accent }]}
+                onPress={() => onSelectLure(name)}
+                activeOpacity={0.75}
+              >
+                {isSelected && <Ionicons name="checkmark" size={11} color={colors.accent} />}
+                <Text style={[styles.chipText, isSelected && { color: colors.accent, fontWeight: '600' }]}>🪝 {name}</Text>
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity style={styles.chip} onPress={onOpenLurePicker} activeOpacity={0.75}>
+            <Ionicons name="add" size={13} color={colors.accent} />
+            <Text style={[styles.chipText, { color: colors.accent }]}>Autre</Text>
+          </TouchableOpacity>
+        </View>
+      </InfoCard>
+
+      <View style={styles.quickCatchRow}>
+        <TouchableOpacity
+          style={[styles.quickButton, quickState === 'success' && styles.quickButtonSuccess]}
+          onPress={quickState === 'idle' ? onQuickCatch : undefined}
+          activeOpacity={0.85}
+        >
+          {quickState === 'loading' ? (
+            <ActivityIndicator color={colors.bg} size="small" />
+          ) : quickState === 'success' ? (
+            <>
+              <Ionicons name="checkmark-circle" size={24} color={colors.bg} />
+              <Text style={styles.quickButtonText}>Prise enregistrée !</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="fish" size={24} color={colors.bg} />
+              <Text style={styles.quickButtonText}>Prise rapide</Text>
+            </>
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.detailCatchButton} onPress={onOpenDetailCatch} activeOpacity={0.85}>
+          <Ionicons name="create-outline" size={22} color={colors.accent} />
+        </TouchableOpacity>
+      </View>
+
+      {confirmingEnd ? (
+        <View style={styles.endTripConfirmRow}>
+          <TouchableOpacity style={styles.cancelConfirmButton} onPress={() => setConfirmingEnd(false)} activeOpacity={0.75}>
+            <Text style={styles.cancelConfirmText}>Annuler</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.confirmEndButton, ending && { opacity: 0.6 }]}
+            onPress={() => { if (!ending) { setConfirmingEnd(false); onEndTrip(); } }}
+            activeOpacity={0.75}
+          >
+            {ending
+              ? <ActivityIndicator size="small" color={colors.bg} />
+              : <Text style={styles.confirmEndText}>Confirmer</Text>
+            }
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.endTripButton} onPress={() => setConfirmingEnd(true)} activeOpacity={0.75}>
+          <Text style={styles.endTripText}>Terminer le voyage</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -393,7 +502,8 @@ function InfoCard({
 
 // ─── History card ─────────────────────────────────────────────────────────────
 
-function TripHistoryCard({ trip, onRelaunch }: { trip: Trip; onRelaunch: () => void }) {
+function TripHistoryCard({ trip, onRelaunch, onDelete }: { trip: Trip; onRelaunch: () => void; onDelete: () => void }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const lakeNames = formatLakeNames(trip);
   const companionsText = trip.companions.length > 0 ? trip.companions.join(', ') : 'Seul(e)';
   const allSpecies = [...new Set(trip.lakes.flatMap((l) => l.targetSpecies))];
@@ -402,10 +512,21 @@ function TripHistoryCard({ trip, onRelaunch }: { trip: Trip; onRelaunch: () => v
     <View style={styles.historyCard}>
       <View style={styles.historyCardHeader}>
         <Text style={styles.historyDate}>{formatTripDate(trip.startedAt)}</Text>
-        <TouchableOpacity onPress={onRelaunch} style={styles.relaunchButton} activeOpacity={0.75}>
-          <Ionicons name="refresh-outline" size={14} color={colors.accent} />
-          <Text style={styles.relaunchText}>Relancer</Text>
-        </TouchableOpacity>
+        <View style={styles.historyCardActions}>
+          <TouchableOpacity onPress={onRelaunch} style={styles.relaunchButton} activeOpacity={0.75}>
+            <Ionicons name="refresh-outline" size={14} color={colors.accent} />
+            <Text style={styles.relaunchText}>Relancer</Text>
+          </TouchableOpacity>
+          {confirmingDelete ? (
+            <TouchableOpacity onPress={() => { setConfirmingDelete(false); onDelete(); }} style={styles.deleteConfirmButton} activeOpacity={0.75}>
+              <Text style={styles.deleteConfirmText}>Supprimer ?</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={() => setConfirmingDelete(true)} style={styles.deleteButton} activeOpacity={0.75} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="trash-outline" size={15} color={colors.error} />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       <Text style={styles.historyLakes}>{lakeNames}</Text>
@@ -475,11 +596,30 @@ const styles = StyleSheet.create({
   },
 
   // Active trip
+  activeTripHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xs,
+  },
   activeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    marginBottom: spacing.xs,
+  },
+  editTripButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.accent + '50',
+  },
+  editTripText: {
+    ...typography.label,
+    color: colors.accent,
   },
   activeDot: {
     width: 8,
@@ -549,8 +689,25 @@ const styles = StyleSheet.create({
     ...typography.label,
   },
 
+  // Quick catch row
+  quickCatchRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+  detailCatchButton: {
+    width: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+
   // Quick catch button
   quickButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -558,7 +715,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     borderRadius: radius.lg,
     paddingVertical: spacing.lg + 4,
-    marginTop: spacing.lg,
     ...{
       shadowColor: colors.accent,
       shadowOffset: { width: 0, height: 6 },
@@ -576,6 +732,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
+  quickSelectLabel: {
+    ...typography.caption,
+    color: colors.accent,
+    marginBottom: spacing.sm,
+  },
+
   // End trip
   endTripButton: {
     alignItems: 'center',
@@ -585,6 +747,35 @@ const styles = StyleSheet.create({
   endTripText: {
     ...typography.body,
     color: colors.error,
+  },
+  endTripConfirmRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+  cancelConfirmButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  cancelConfirmText: {
+    ...typography.body,
+    color: colors.textMuted,
+  },
+  confirmEndButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: colors.error,
+  },
+  confirmEndText: {
+    ...typography.body,
+    color: colors.bg,
+    fontWeight: '600' as const,
   },
 
   // History card
@@ -601,6 +792,26 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: spacing.xs,
+  },
+  historyCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  deleteButton: {
+    padding: 4,
+  },
+  deleteConfirmButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.full,
+    backgroundColor: colors.error + '20',
+    borderWidth: 1,
+    borderColor: colors.error + '50',
+  },
+  deleteConfirmText: {
+    ...typography.label,
+    color: colors.error,
   },
   historyDate: {
     ...typography.label,

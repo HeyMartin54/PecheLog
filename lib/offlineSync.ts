@@ -10,6 +10,7 @@ export const OFFLINE_QUEUE_KEY = 'offline_catches_queue_v1';
 type CatchPayload = {
   user_id: string;
   map_id: string | null;
+  trip_id: string | null;
   species: string;
   lure: string | null;
   latitude: number;

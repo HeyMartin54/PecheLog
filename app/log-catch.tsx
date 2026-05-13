@@ -12,19 +12,26 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationPickerMap from '@/components/LocationPickerMap';
 import StaticMapView from '@/components/StaticMapView';
+import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
-import { getLureByName } from '@/lib/lures';
-import { useRouter } from 'expo-router';
+import {
+  createUserLure,
+  loadLuresWithCache,
+  setCachedLures,
+  type UserLure,
+} from '@/lib/lureStorage';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { enqueueOfflineCatch, trySyncOfflineCatches } from '@/lib/offlineSync';
-import { saveLastCatchSettings } from '@/lib/tripStorage';
+import { loadActiveTrip, saveLastCatchSettings, type Trip } from '@/lib/tripStorage';
 
 // ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
 // Nominatim + Overpass : trop lent et peu fiable en production.
@@ -43,6 +50,7 @@ type MediaItem = {
 type CatchPayload = {
   user_id: string;
   map_id: string | null;
+  trip_id: string | null;
   species: string;
   lure: string | null;
   latitude: number;
@@ -227,6 +235,53 @@ function windDegToCompass(deg: number): string {
   return dirs[Math.round(deg / 45) % 8];
 }
 
+async function fetchWeatherForDatetime(
+  latitude: number,
+  longitude: number,
+  datetime: Date,
+): Promise<WeatherData | null> {
+  const diffMs = Date.now() - datetime.getTime();
+  const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+  if (diffMs < 60 * 60 * 1000) {
+    return fetchWeatherFromOpenWeather(latitude, longitude);
+  }
+
+  try {
+    const dateStr = datetime.toISOString().slice(0, 10);
+    const baseUrl = diffDays <= 92
+      ? `https://api.open-meteo.com/v1/forecast?past_days=${Math.ceil(diffDays)}&forecast_days=1`
+      : `https://archive-api.open-meteo.com/v1/archive?start_date=${dateStr}&end_date=${dateStr}`;
+
+    const url =
+      `${baseUrl}&latitude=${latitude}&longitude=${longitude}` +
+      `&hourly=temperature_2m,windspeed_10m,winddirection_10m,cloudcover&timezone=auto`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
+
+    const data = await res.json();
+    const times: string[] = data.hourly?.time ?? [];
+    const targetHour = datetime.getHours();
+    const idx = times.findIndex(
+      (t) => t.startsWith(dateStr) && new Date(t).getHours() === targetHour,
+    );
+    if (idx === -1) throw new Error('Heure non trouvée dans Open-Meteo');
+
+    const tempC = data.hourly.temperature_2m?.[idx] ?? null;
+    const windKmh = data.hourly.windspeed_10m?.[idx] ?? null;
+    const windDeg = data.hourly.winddirection_10m?.[idx] ?? null;
+    const cloudiness: number = data.hourly.cloudcover?.[idx] ?? 50;
+    const weatherMain = cloudiness < 20 ? 'Clear' : cloudiness < 70 ? 'Clouds' : 'Overcast';
+    const { label, icon } = getWeatherConditionFr(weatherMain, cloudiness);
+
+    return { tempC, windKmh, windDeg, conditions: label, conditionsIcon: icon };
+  } catch (e) {
+    console.warn('[Weather] Open-Meteo historique échoué, fallback météo courante', e);
+    return fetchWeatherFromOpenWeather(latitude, longitude);
+  }
+}
+
 async function fetchWeatherFromOpenWeather(
   latitude: number,
   longitude: number,
@@ -264,10 +319,33 @@ async function fetchWeatherFromOpenWeather(
   }
 }
 
+function fmtDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function fmtTime(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export default function LogCatchScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
+  const { prefillSpecies, prefillLure, returnTo } = useLocalSearchParams<{
+    prefillSpecies?: string;
+    prefillLure?: string;
+    returnTo?: string;
+  }>();
+
+  const navigateAfterSave = () => {
+    if (returnTo === 'trip') {
+      router.replace('/(tabs)/trip');
+    } else {
+      router.back();
+    }
+  };
+
+  const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
 
   // Auto-captured
   const [coords, setCoords] = useState<Location.LocationObject | null>(null);
@@ -293,9 +371,10 @@ export default function LogCatchScreen() {
     'Site prometteur',
   ]);
   const [selectedSpecies, setSelectedSpecies] = useState<string | null>('Doré jaune');
-  const [selectedLure, setSelectedLure] = useState<string | null>(null);
+  const [selectedLure, setSelectedLure] = useState<UserLure | null>(null);
   const [showLurePicker, setShowLurePicker] = useState(false);
-  const [customLures, setCustomLures] = useState<string[]>([]);
+  const [showLureForm, setShowLureForm] = useState(false);
+  const [userLures, setUserLures] = useState<UserLure[]>([]);
 
   const [depthMeters, setDepthMeters] = useState<string>('');
   const [sonarDepthMeters] = useState<number | null>(null); // TODO: brancher sur useSonar quand dispo
@@ -333,6 +412,8 @@ export default function LogCatchScreen() {
     const init = async () => {
       if (!user?.id) return;
       await trySyncOfflineCatches(user.id);
+      const trip = await loadActiveTrip();
+      if (isMounted) setActiveTrip(trip);
 
       try {
         setAutoLoading(true);
@@ -390,52 +471,53 @@ export default function LogCatchScreen() {
   }, [user?.id]);
 
   useEffect(() => {
-    // Charger les préférences de l'utilisateur pour peupler espèces / leurres
     const loadPreferences = async () => {
       if (!user?.id) return;
       try {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('preferred_species, preferred_lures')
-          .eq('id', user.id)
-          .maybeSingle();
+        const [profileData, lures] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('preferred_species')
+            .eq('id', user.id)
+            .maybeSingle()
+            .then(({ data }) => data),
+          loadLuresWithCache(user.id),
+        ]);
 
-        if (error) {
-          console.warn('[LogCatch] Erreur chargement préférences', error);
-          return;
-        }
-
-        if (data?.preferred_species && Array.isArray(data.preferred_species)) {
-          const arr = data.preferred_species.filter((s: unknown) => typeof s === 'string');
+        if (profileData?.preferred_species && Array.isArray(profileData.preferred_species)) {
+          const arr = profileData.preferred_species.filter((s: unknown) => typeof s === 'string');
           if (arr.length > 0) {
             setSpeciesOptions(arr);
             setSelectedSpecies(arr[0]);
           }
         }
 
-        if (data?.preferred_lures && Array.isArray(data.preferred_lures)) {
-          const arr = data.preferred_lures.filter((s: unknown) => typeof s === 'string');
-          if (arr.length > 0) {
-            setCustomLures(arr);
-          }
+        setUserLures(lures);
+
+        // Préremplissage depuis la prise rapide du voyage (priorité sur les défauts)
+        if (prefillSpecies) {
+          setSelectedSpecies(prefillSpecies);
+          setSpeciesOptions((prev) => prev.includes(prefillSpecies) ? prev : [prefillSpecies, ...prev]);
+        }
+        if (prefillLure) {
+          const lureObj = lures.find((l) => l.name === prefillLure);
+          if (lureObj) setSelectedLure(lureObj);
         }
       } catch (error) {
-        console.warn('[LogCatch] Erreur inattendue chargement préférences', error);
+        console.warn('[LogCatch] Erreur chargement préférences', error);
       }
     };
 
     loadPreferences();
   }, [user?.id]);
 
-  // Date et heure de la prise (éditables)
-  const [catchDate, setCatchDate] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  });
-  const [catchTime, setCatchTime] = useState(() => {
-    const d = new Date();
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  });
+  // Date et heure de la prise
+  const [catchDateTime, setCatchDateTime] = useState<Date>(() => new Date());
+  const [showDateTimePicker, setShowDateTimePicker] = useState(false);
+  const [datePickerMode, setDatePickerMode] = useState<'date' | 'time'>('date');
+  // Web : états string intermédiaires pour les TextInput
+  const [webDate, setWebDate] = useState(() => fmtDate(new Date()));
+  const [webTime, setWebTime] = useState(() => fmtTime(new Date()));
 
   // "Site prometteur" : aucun poisson — masque météo, leurre, grosseur, photos
   const isSitePrometteur = selectedSpecies === 'Site prometteur';
@@ -456,7 +538,7 @@ export default function LogCatchScreen() {
       LAKE_NAME_FEATURE
         ? reverseGeocodeLakeName(pickerCoord.latitude, pickerCoord.longitude)
         : Promise.resolve(null),
-      fetchWeatherFromOpenWeather(pickerCoord.latitude, pickerCoord.longitude),
+      fetchWeatherForDatetime(pickerCoord.latitude, pickerCoord.longitude, catchDateTime),
     ]);
     if (LAKE_NAME_FEATURE) setLakeName(lake);
     if (weather) {
@@ -472,6 +554,66 @@ export default function LogCatchScreen() {
     setManualLocation(null);
     if (coords) {
       setPickerCoord({ latitude: coords.coords.latitude, longitude: coords.coords.longitude });
+    }
+  };
+
+  const handleWebDateBlur = () => {
+    const parts = webDate.trim().split('-').map(Number);
+    if (parts.length === 3 && parts.every((n) => !isNaN(n))) {
+      const [y, m, d] = parts;
+      if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+        const dt = new Date(catchDateTime);
+        dt.setFullYear(y, m - 1, d);
+        handleDateTimeCommit(dt);
+      }
+    }
+  };
+
+  const handleWebTimeBlur = () => {
+    const parts = webTime.trim().split(':').map(Number);
+    if (parts.length >= 2 && parts.every((n) => !isNaN(n))) {
+      const [h, min] = parts;
+      if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
+        const dt = new Date(catchDateTime);
+        dt.setHours(h, min, 0, 0);
+        handleDateTimeCommit(dt);
+      }
+    }
+  };
+
+  const handleDateTimeCommit = async (dt: Date) => {
+    setCatchDateTime(dt);
+    setWebDate(fmtDate(dt));
+    setWebTime(fmtTime(dt));
+    if (!effectiveCoords) return;
+    const weather = await fetchWeatherForDatetime(effectiveCoords.latitude, effectiveCoords.longitude, dt);
+    if (weather) {
+      setTemperatureC(weather.tempC);
+      setWindSpeedKmh(weather.windKmh);
+      setWindDirectionDeg(weather.windDeg);
+      setWeatherConditions(weather.conditions);
+      setWeatherConditionsIcon(weather.conditionsIcon);
+    }
+  };
+
+  const handlePickerChange = (_: any, selected?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowDateTimePicker(false);
+      if (!selected) return;
+      if (datePickerMode === 'date') {
+        const merged = new Date(selected);
+        merged.setHours(catchDateTime.getHours(), catchDateTime.getMinutes(), 0, 0);
+        setCatchDateTime(merged);
+        setDatePickerMode('time');
+        setShowDateTimePicker(true);
+      } else {
+        const merged = new Date(catchDateTime);
+        merged.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+        handleDateTimeCommit(merged);
+        setDatePickerMode('date');
+      }
+    } else {
+      if (selected) handleDateTimeCommit(selected);
     }
   };
 
@@ -534,8 +676,9 @@ export default function LogCatchScreen() {
     const payload: CatchPayload = {
       user_id: effectiveUserId,
       map_id: null, // TODO: brancher sur la carte sélectionnée (personnelle / partagée)
+      trip_id: activeTrip?.id ?? null,
       species: selectedSpecies,
-      lure: isSitePrometteur ? null : selectedLure,
+      lure: isSitePrometteur ? null : (selectedLure?.name ?? null),
       latitude: effectiveCoords.latitude,
       longitude: effectiveCoords.longitude,
       lake_name: LAKE_NAME_FEATURE ? lakeName : null,
@@ -550,10 +693,7 @@ export default function LogCatchScreen() {
       weight_lbs: isSitePrometteur ? null : (sizeMode === 'weight' ? weightValue : null),
       length_inches: isSitePrometteur ? null : (sizeMode === 'length' ? lengthValue : null),
       notes: notes.trim().length > 0 ? notes.trim() : null,
-      caught_at: (() => {
-        try { return new Date(`${catchDate}T${catchTime}:00`).toISOString(); }
-        catch { return new Date().toISOString(); }
-      })(),
+      caught_at: catchDateTime.toISOString(),
       local_id: `local_${Date.now()}`,
     };
 
@@ -566,27 +706,27 @@ export default function LogCatchScreen() {
       if (error) {
         console.warn(`[LogCatch] Erreur lors de l'enregistrement en ligne, on bascule hors-ligne`, error);
         await enqueueOfflineCatch({ payload, media });
-        await saveLastCatchSettings({ species: payload.species, lure: payload.lure ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
+        await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
         Alert.alert(
           'Mode hors-ligne',
           'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
         );
-        router.back();
+        navigateAfterSave();
         return;
       }
 
-      await saveLastCatchSettings({ species: payload.species, lure: payload.lure ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
+      await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
       Alert.alert('Prise enregistrée', 'Ta prise a été enregistrée avec succès.');
-      router.back();
+      navigateAfterSave();
     } catch (error) {
       console.warn('[LogCatch] Erreur inattendue, stockage hors-ligne', error);
       await enqueueOfflineCatch({ payload, media });
-      await saveLastCatchSettings({ species: payload.species, lure: payload.lure ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
+      await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
       Alert.alert(
         'Mode hors-ligne',
         'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
       );
-      router.back();
+      navigateAfterSave();
     } finally {
       setSaving(false);
     }
@@ -640,29 +780,63 @@ export default function LogCatchScreen() {
                 modified={!!manualLocation}
               />
 
-              {/* Date éditable */}
-              <View style={[styles.autoField, styles.autoFieldAuto, { marginTop: 8 }]}>
-                <Text style={styles.badgeIconText}>📅</Text>
-                <TextInput
-                  style={styles.badgeTextInput}
-                  value={catchDate}
-                  onChangeText={setCatchDate}
-                  placeholder="AAAA-MM-JJ"
-                  placeholderTextColor={TEXT_MUTED}
-                />
-              </View>
-
-              {/* Heure éditable */}
-              <View style={[styles.autoField, styles.autoFieldAuto, { marginTop: 8 }]}>
-                <Text style={styles.badgeIconText}>🕐</Text>
-                <TextInput
-                  style={styles.badgeTextInput}
-                  value={catchTime}
-                  onChangeText={setCatchTime}
-                  placeholder="HH:MM"
-                  placeholderTextColor={TEXT_MUTED}
-                />
-              </View>
+              {/* Date et heure */}
+              {Platform.OS === 'web' ? (
+                <View style={styles.dateTimeButton}>
+                  <Text style={styles.dateTimeBtnIcon}>📅</Text>
+                  <TextInput
+                    style={[styles.dateTimeBtnDate, { flex: 1, padding: 0 }]}
+                    value={webDate}
+                    onChangeText={setWebDate}
+                    onBlur={handleWebDateBlur}
+                    placeholder="AAAA-MM-JJ"
+                    placeholderTextColor={ACCENT_COLOR}
+                    maxLength={10}
+                  />
+                  <Text style={[styles.dateTimeBtnTime, { marginHorizontal: 8, opacity: 1 }]}>🕐</Text>
+                  <TextInput
+                    style={[styles.dateTimeBtnTime, { padding: 0, opacity: 1 }]}
+                    value={webTime}
+                    onChangeText={setWebTime}
+                    onBlur={handleWebTimeBlur}
+                    placeholder="HH:MM"
+                    placeholderTextColor={ACCENT_COLOR}
+                    maxLength={5}
+                  />
+                </View>
+              ) : (
+                <>
+                  <TouchableOpacity
+                    style={styles.dateTimeButton}
+                    onPress={() => {
+                      setDatePickerMode('date');
+                      setShowDateTimePicker(true);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.dateTimeBtnIcon}>📅</Text>
+                    <View style={styles.dateTimeBtnText}>
+                      <Text style={styles.dateTimeBtnDate}>
+                        {catchDateTime.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
+                      </Text>
+                      <Text style={styles.dateTimeBtnTime}>
+                        🕐 {catchDateTime.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                    <Text style={styles.dateTimeBtnChevron}>›</Text>
+                  </TouchableOpacity>
+                  {showDateTimePicker && (
+                    <DateTimePicker
+                      value={catchDateTime}
+                      mode={Platform.OS === 'ios' ? 'datetime' : datePickerMode}
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      maximumDate={new Date()}
+                      onChange={handlePickerChange}
+                      locale="fr-CA"
+                    />
+                  )}
+                </>
+              )}
 
               {/* Vitesse — pré-remplie par GPS, éditable manuellement */}
               <View style={[
@@ -750,14 +924,12 @@ export default function LogCatchScreen() {
             >
               {selectedLure ? (
                 <>
-                  <Text style={styles.lureButtonEmoji}>
-                    {getLureByName(selectedLure)?.emoji ?? '🪝'}
-                  </Text>
+                  <Text style={styles.lureButtonEmoji}>🪝</Text>
                   <View style={styles.lureButtonInfo}>
-                    <AutoFieldText style={styles.lureButtonName}>{selectedLure}</AutoFieldText>
-                    {getLureByName(selectedLure)?.brand ? (
+                    <AutoFieldText style={styles.lureButtonName}>{selectedLure.name}</AutoFieldText>
+                    {(selectedLure.size || selectedLure.color) ? (
                       <AutoFieldText style={styles.lureButtonBrand}>
-                        {getLureByName(selectedLure)?.brand}
+                        {[selectedLure.size, selectedLure.color].filter(Boolean).join(' · ')}
                       </AutoFieldText>
                     ) : null}
                   </View>
@@ -775,11 +947,26 @@ export default function LogCatchScreen() {
             </TouchableOpacity>
             <LurePicker
               visible={showLurePicker}
-              selectedLure={selectedLure}
-              customLures={customLures}
-              onSelect={(name) => setSelectedLure(name)}
-              onAddCustom={(name) => setCustomLures((prev) => [...prev, name])}
+              selectedLureName={selectedLure?.name ?? null}
+              userLures={userLures}
+              onSelect={(lure) => { setSelectedLure(lure); setShowLurePicker(false); }}
+              onCreateNew={() => { setShowLurePicker(false); setShowLureForm(true); }}
               onClose={() => setShowLurePicker(false)}
+            />
+            <LureFormModal
+              visible={showLureForm}
+              onSave={async (data) => {
+                if (!user?.id) return;
+                setShowLureForm(false);
+                const created = await createUserLure(user.id, data);
+                if (created) {
+                  const updated = [...userLures, created].sort((a, b) => a.name.localeCompare(b.name));
+                  setUserLures(updated);
+                  await setCachedLures(user.id, updated);
+                  setSelectedLure(created);
+                }
+              }}
+              onClose={() => setShowLureForm(false)}
             />
           </View>
         )}
@@ -1443,6 +1630,42 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: colors.bg,
+  },
+
+  dateTimeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: colors.accentSubtle,
+    borderWidth: 1,
+    borderColor: colors.accentGlow,
+  },
+  dateTimeBtnIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  dateTimeBtnText: {
+    flex: 1,
+  },
+  dateTimeBtnDate: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: ACCENT_COLOR,
+  },
+  dateTimeBtnTime: {
+    fontSize: 12,
+    color: ACCENT_COLOR,
+    marginTop: 2,
+    opacity: 0.8,
+  },
+  dateTimeBtnChevron: {
+    fontSize: 20,
+    color: ACCENT_COLOR,
+    marginLeft: 6,
+    fontWeight: '300',
   },
 
   // Auto-field badge: modified state
