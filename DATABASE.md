@@ -70,6 +70,30 @@ CREATE POLICY "user_lures_own" ON user_lures
   WITH CHECK (auth.uid() = user_id);
 ```
 
+### trips — Voyages de pêche
+```sql
+CREATE TABLE trips (
+  id            TEXT PRIMARY KEY,
+  user_id       UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  started_at    TIMESTAMPTZ NOT NULL,
+  ended_at      TIMESTAMPTZ,
+  lakes         JSONB NOT NULL DEFAULT '[]',
+  companions    TEXT[] DEFAULT '{}',
+  lures_selected TEXT[] DEFAULT '{}',
+  notes         TEXT,
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_trips_user_id  ON trips(user_id);
+CREATE INDEX idx_trips_ended_at ON trips(ended_at);
+
+ALTER TABLE trips ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "trips_own" ON trips
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+```
+
 ### maps — Cartes (personnelles et partagées)
 ```sql
 CREATE TABLE maps (
