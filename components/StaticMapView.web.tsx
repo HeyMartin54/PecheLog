@@ -34,9 +34,9 @@ function makePinIcon() {
   const L = require('leaflet');
   return L.divIcon({
     className: '',
-    html: `<div style="width:28px;height:28px;border-radius:50%;background:#00D4AA;border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.5);font-size:14px;line-height:28px;text-align:center;">📍</div>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    html: `<div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;"><div style="width:26px;height:26px;border-top-left-radius:13px;border-top-right-radius:13px;border-bottom-right-radius:13px;border-bottom-left-radius:0;transform:rotate(-45deg);background:#00D4AA;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;"><div style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.85);"></div></div></div>`,
+    iconSize: [36, 36],
+    iconAnchor: [18, 36],
   });
 }
 

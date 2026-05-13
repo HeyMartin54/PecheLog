@@ -6,9 +6,8 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import 'react-native-reanimated';
-import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import ConnectionBadge from '@/components/ConnectionBadge';
 import { useColorScheme } from '@/components/useColorScheme';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -52,23 +51,9 @@ export default function RootLayout() {
   return <RootLayoutNav />;
 }
 
-function BadgeOverlay() {
-  const insets = useSafeAreaInsets();
-  return (
-    <View style={[styles.badgeOverlay, { top: insets.top + 8 }]} pointerEvents="none">
-      <ConnectionBadge />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-  },
-  badgeOverlay: {
-    position: 'absolute',
-    right: 16,
-    zIndex: 9999,
   },
 });
 
@@ -102,10 +87,10 @@ function RootLayoutNav() {
               <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
               <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
               <Stack.Screen name="catch-detail" options={{ headerShown: false }} />
+              <Stack.Screen name="plan-trip" options={{ headerShown: false }} />
               <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
             </Stack>
             <SyncManager />
-            <BadgeOverlay />
           </View>
         </ThemeProvider>
       </AuthProvider>

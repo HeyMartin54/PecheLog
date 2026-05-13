@@ -17,10 +17,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors } from '@/lib/theme';
-import { getSpeciesColor } from '@/lib/species';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +98,8 @@ export default function MapScreen() {
   const insets = useSafeAreaInsets();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapRef = useRef<any>(null);
+
+  const { getColor } = useSpeciesColors();
 
   const [catches, setCatches] = useState<CatchPin[]>([]);
   const [loading, setLoading] = useState(true);
@@ -223,11 +225,11 @@ export default function MapScreen() {
               return (
                 <TouchableOpacity
                   key={s}
-                  style={[styles.pChip, active && { backgroundColor: 'rgba(0,230,181,0.15)', borderColor: getSpeciesColor(s) }]}
+                  style={[styles.pChip, active && { backgroundColor: 'rgba(0,230,181,0.15)', borderColor: getColor(s) }]}
                   onPress={() => setFilters((f) => ({ ...f, species: toggleItem(f.species, s) }))}
                   activeOpacity={0.8}
                 >
-                  <View style={[styles.pChipDot, { backgroundColor: getSpeciesColor(s) }]} />
+                  <View style={[styles.pChipDot, { backgroundColor: getColor(s) }]} />
                   <Text style={[styles.pChipText, active && styles.pChipTextActive]}>{s}</Text>
                 </TouchableOpacity>
               );
@@ -358,9 +360,11 @@ export default function MapScreen() {
         showsMyLocationButton
       >
         {visibleCatches.map((c) => (
-          <Marker key={c.id} coordinate={{ latitude: c.latitude, longitude: c.longitude }}>
-            <View style={[styles.pin, { backgroundColor: getSpeciesColor(c.species) }]}>
-              <Text style={styles.pinEmoji}>🐟</Text>
+          <Marker key={c.id} coordinate={{ latitude: c.latitude, longitude: c.longitude }} anchor={{ x: 0.5, y: 1 }}>
+            <View style={styles.pinContainer}>
+              <View style={[styles.pinShape, { backgroundColor: getColor(c.species) }]}>
+                <View style={styles.pinDot} />
+              </View>
             </View>
             <Callout style={styles.calloutWrapper} onPress={() => router.push(`/catch-detail?id=${c.id}`)}>
               <View style={styles.callout}>
@@ -504,14 +508,23 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
 
-  pin: {
-    width: 36, height: 36, borderRadius: 18,
+  pinContainer: {
+    width: 36, height: 36,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2.5, borderColor: 'rgba(255,255,255,0.9)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.5, shadowRadius: 5, elevation: 6,
   },
-  pinEmoji: { fontSize: 17 },
+  pinShape: {
+    width: 26, height: 26,
+    borderTopLeftRadius: 13, borderTopRightRadius: 13,
+    borderBottomRightRadius: 13, borderBottomLeftRadius: 0,
+    transform: [{ rotate: '-45deg' }],
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5, shadowRadius: 4, elevation: 6,
+  },
+  pinDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+  },
 
   calloutWrapper: { width: 200 },
   callout: { padding: 10 },

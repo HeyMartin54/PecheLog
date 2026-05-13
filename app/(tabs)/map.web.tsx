@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors } from '@/lib/theme';
@@ -53,14 +54,6 @@ const EMPTY_FILTERS: FilterState = { species: [], lures: [], dateFrom: null, dat
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
-const SPECIES_COLORS: Record<string, string> = {
-  doré: '#FFD700',
-  brochet: '#2ECC71',
-  truite: '#3498DB',
-  touladi: '#9E9E9E',
-  site: '#FFFFFF',
-};
-
 const WEATHER_OPTIONS = ['☀️ Ensoleillé', '⛅ Nuageux', '🌧️ Pluie', '💨 Vent', '❄️ Froid'];
 
 const TILES = {
@@ -75,12 +68,6 @@ const TILES = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function getSpeciesColor(species: string): string {
-  const lower = species.toLowerCase();
-  const key = Object.keys(SPECIES_COLORS).find((k) => lower.includes(k));
-  return key ? SPECIES_COLORS[key] : '#AAAAAA';
-}
 
 function formatDateFr(iso: string): string {
   return new Date(iso).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -99,10 +86,10 @@ function makeIcon(color: string) {
   const L = require('leaflet');
   return L.divIcon({
     className: '',
-    html: `<div style="width:34px;height:34px;border-radius:50%;background:${color};border:2.5px solid #fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.45);font-size:17px;line-height:34px;text-align:center;">🐟</div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
-    popupAnchor: [0, -18],
+    html: `<div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;"><div style="width:26px;height:26px;border-top-left-radius:13px;border-top-right-radius:13px;border-bottom-right-radius:13px;border-bottom-left-radius:0;transform:rotate(-45deg);background:${color};box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;"><div style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.85);"></div></div></div>`,
+    iconSize: [36, 36],
+    iconAnchor: [18, 36],
+    popupAnchor: [0, -36],
   });
 }
 
@@ -127,6 +114,8 @@ export default function MapScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const isConnected = useNetworkStatus();
+
+  const { getColor } = useSpeciesColors();
 
   const [catches, setCatches] = useState<CatchPin[]>([]);
   const [loading, setLoading] = useState(true);
@@ -227,7 +216,7 @@ export default function MapScreen() {
     let isActive = (_: string) => false;
 
     if (openPanel === 'species') {
-      items = speciesList.map((s) => ({ key: s, label: s, color: getSpeciesColor(s) }));
+      items = speciesList.map((s) => ({ key: s, label: s, color: getColor(s) }));
       onToggle = (s) => setFilters((f) => ({ ...f, species: toggleItem(f.species, s) }));
       isActive = (s) => filters.species.includes(s);
     } else if (openPanel === 'lure') {
@@ -329,7 +318,7 @@ export default function MapScreen() {
             <TileLayer url={satellite ? TILES.satellite.url : TILES.standard.url} attribution={satellite ? TILES.satellite.attribution : TILES.standard.attribution} />
             <MapFitter catches={visibleCatches} />
             {visibleCatches.map((c) => (
-              <Marker key={c.id} position={[c.latitude, c.longitude]} icon={makeIcon(getSpeciesColor(c.species))}>
+              <Marker key={c.id} position={[c.latitude, c.longitude]} icon={makeIcon(getColor(c.species))}>
                 <Popup>
                   <div style={{ fontFamily: 'sans-serif', minWidth: 140 }}>
                     <strong style={{ fontSize: 14 }}>{c.species}</strong>

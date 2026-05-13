@@ -24,6 +24,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { enqueueOfflineCatch, trySyncOfflineCatches } from '@/lib/offlineSync';
+import { saveLastCatchSettings } from '@/lib/tripStorage';
 
 // ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
 // Nominatim + Overpass : trop lent et peu fiable en production.
@@ -565,6 +566,7 @@ export default function LogCatchScreen() {
       if (error) {
         console.warn(`[LogCatch] Erreur lors de l'enregistrement en ligne, on bascule hors-ligne`, error);
         await enqueueOfflineCatch({ payload, media });
+        await saveLastCatchSettings({ species: payload.species, lure: payload.lure ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
         Alert.alert(
           'Mode hors-ligne',
           'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
@@ -573,11 +575,13 @@ export default function LogCatchScreen() {
         return;
       }
 
+      await saveLastCatchSettings({ species: payload.species, lure: payload.lure ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
       Alert.alert('Prise enregistrée', 'Ta prise a été enregistrée avec succès.');
       router.back();
     } catch (error) {
       console.warn('[LogCatch] Erreur inattendue, stockage hors-ligne', error);
       await enqueueOfflineCatch({ payload, media });
+      await saveLastCatchSettings({ species: payload.species, lure: payload.lure ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
       Alert.alert(
         'Mode hors-ligne',
         'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
@@ -671,7 +675,7 @@ export default function LogCatchScreen() {
                   style={styles.badgeTextInput}
                   value={speedInput}
                   onChangeText={(v) => { setSpeedInput(v); setSpeedModified(true); }}
-                  placeholder={autoLoading ? 'GPS…' : '— km/h'}
+                  placeholder={autoLoading ? 'GPS…' : '—'}
                   placeholderTextColor={TEXT_MUTED}
                   keyboardType="decimal-pad"
                 />

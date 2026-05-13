@@ -101,6 +101,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="trip"
+        options={{
+          title: 'Voyage',
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon name="boat" color={color} focused={focused} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Réglages',

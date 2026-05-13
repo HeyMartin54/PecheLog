@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 type UseWeatherResult = {
   temperatureC: number | null;
   windKmh: number | null;
+  windDirection: string | null;
   loading: boolean;
   error: string | null;
 };
@@ -13,6 +14,7 @@ export function useWeather(
 ): UseWeatherResult {
   const [temperatureC, setTemperatureC] = useState<number | null>(null);
   const [windKmh, setWindKmh] = useState<number | null>(null);
+  const [windDirection, setWindDirection] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +35,7 @@ export function useWeather(
 
         setTemperatureC(data.tempC);
         setWindKmh(data.windKmh);
+        setWindDirection(data.windDirection);
       } catch (err) {
         console.warn('[useWeather] Erreur lors du chargement météo', err);
         if (isMounted) {
@@ -55,15 +58,21 @@ export function useWeather(
   return {
     temperatureC,
     windKmh,
+    windDirection,
     loading,
     error,
   };
 }
 
+function degreesToCardinal(deg: number): string {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
 async function fetchWeatherFromOpenWeather(
   latitude: number,
   longitude: number,
-): Promise<{ tempC: number | null; windKmh: number | null } | null> {
+): Promise<{ tempC: number | null; windKmh: number | null; windDirection: string | null } | null> {
   const apiKey = process.env.EXPO_PUBLIC_OPENWEATHER_API_KEY;
   if (!apiKey) {
     console.warn('[useWeather] EXPO_PUBLIC_OPENWEATHER_API_KEY manquante');
@@ -82,8 +91,10 @@ async function fetchWeatherFromOpenWeather(
     const tempC = typeof data?.main?.temp === 'number' ? data.main.temp : null;
     const windMs = typeof data?.wind?.speed === 'number' ? data.wind.speed : null;
     const windKmh = windMs != null ? windMs * 3.6 : null;
+    const windDeg = typeof data?.wind?.deg === 'number' ? data.wind.deg : null;
+    const windDirection = windDeg != null ? degreesToCardinal(windDeg) : null;
 
-    return { tempC, windKmh };
+    return { tempC, windKmh, windDirection };
   } catch (err) {
     console.warn('[useWeather] Erreur lors du fetch météo', err);
     return null;

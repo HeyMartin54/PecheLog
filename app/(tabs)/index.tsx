@@ -11,6 +11,8 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import ConnectionBadge from '@/components/ConnectionBadge';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
@@ -131,7 +133,7 @@ export default function HomeScreen() {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const { coords, lakeName } = useLocation();
-  const { temperatureC, windKmh } = useWeather(
+  const { temperatureC, windKmh, windDirection } = useWeather(
     coords?.coords.latitude ?? null,
     coords?.coords.longitude ?? null,
   );
@@ -234,7 +236,9 @@ export default function HomeScreen() {
   const headerTemp =
     temperatureC != null ? `${temperatureC.toFixed(1)}°C` : null;
   const headerWind =
-    windKmh != null ? `${windKmh.toFixed(1)} km/h` : null;
+    windKmh != null
+      ? `${windDirection ? windDirection + ' ' : ''}${windKmh.toFixed(1)} km/h`
+      : null;
 
   return (
     <View style={styles.container}>
@@ -249,6 +253,7 @@ export default function HomeScreen() {
               <Text style={styles.greeting}>Bonjour 👋</Text>
               <Text style={styles.name}>{displayName}</Text>
             </View>
+            <ConnectionBadge />
           </View>
 
           {/* Bandeau météo */}
@@ -268,7 +273,7 @@ export default function HomeScreen() {
               )}
               {headerWind && (
                 <View style={styles.weatherBadge}>
-                  <Ionicons name="wind" size={13} color={colors.accent} />
+                  <Ionicons name="navigate-outline" size={13} color={colors.accent} />
                   <Text style={styles.weatherBadgeText}>{headerWind}</Text>
                 </View>
               )}
