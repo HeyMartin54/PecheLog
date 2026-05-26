@@ -31,14 +31,7 @@ export const SPECIES_CONFIG: Record<string, SpeciesConfig> = {
     photoUrl:
       'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/Esox_lucius1.jpg/640px-Esox_lucius1.jpg',
   },
-  'Brochet du nord': {
-    color: colors.species.brochet,
-    bgColor: 'rgba(61, 186, 120, 0.15)',
-    code: 'BN',
-    photoUrl:
-      'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/Esox_lucius1.jpg/640px-Esox_lucius1.jpg',
-  },
-  'Truite mouchetée': {
+'Truite mouchetée': {
     color: colors.species.truite,
     bgColor: 'rgba(75, 174, 232, 0.15)',
     code: 'TM',

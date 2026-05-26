@@ -183,6 +183,7 @@ export default function MyLuresScreen() {
           renderItem={renderItem}
           contentContainerStyle={[
             styles.listContent,
+            { paddingBottom: spacing.lg + insets.bottom },
             lures.length === 0 && styles.listEmpty,
           ]}
           showsVerticalScrollIndicator={false}

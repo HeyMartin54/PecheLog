@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import type { UserLure } from '@/lib/lureStorage';
 
@@ -38,6 +39,7 @@ type Props = {
 };
 
 export default function LureFormModal({ visible, lure, onSave, onDelete, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const isEditing = !!lure;
 
   const [form, setForm] = useState<LureFormData>({ name: '', size: '', color: '', notes: '' });
@@ -147,7 +149,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         {/* Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={styles.cancelText}>Annuler</Text>
           </TouchableOpacity>
@@ -158,7 +160,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
         </View>
 
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: spacing.lg + insets.bottom }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -255,7 +257,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xl,
     paddingBottom: spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,

@@ -11,6 +11,7 @@ import {
   View,
   KeyboardAvoidingView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import type { UserLure } from '@/lib/lureStorage';
 
@@ -33,6 +34,7 @@ export default function LurePicker({
   onCreateNew,
   onClose,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const [search, setSearch] = useState('');
 
   const handleClose = useCallback(() => {
@@ -101,7 +103,7 @@ export default function LurePicker({
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         {/* Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
           <Text style={styles.headerTitle}>🪝 Choisir un leurre</Text>
           <TouchableOpacity onPress={handleClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={styles.closeBtn}>✕</Text>
@@ -151,7 +153,7 @@ export default function LurePicker({
         />
 
         {/* Bouton créer */}
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: spacing.md + insets.bottom }]}>
           <TouchableOpacity
             style={styles.createBtn}
             onPress={() => { handleClose(); onCreateNew(); }}
@@ -175,7 +177,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xl,
     paddingBottom: spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
@@ -311,7 +312,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    paddingTop: spacing.md,
     borderTopWidth: 1,
     borderTopColor: colors.border,
     backgroundColor: colors.bg,

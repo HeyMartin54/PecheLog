@@ -30,6 +30,7 @@ import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
 import { supabase } from '@/lib/supabase';
 import { enqueueOfflineCatch, trySyncOfflineCatches, persistMediaForOffline } from '@/lib/offlineSync';
 import { uploadMediaFile } from '@/lib/uploadMedia';
@@ -333,6 +334,7 @@ export default function LogCatchScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
+  const { activeSpecies } = useActiveSpecies();
   const { prefillSpecies, prefillLure, returnTo } = useLocalSearchParams<{
     prefillSpecies?: string;
     prefillLure?: string;
@@ -364,15 +366,8 @@ export default function LogCatchScreen() {
   const [speedModified, setSpeedModified] = useState(false); // true si l'utilisateur a modifié
   const [autoLoading, setAutoLoading] = useState(true);
 
-  // Manual fields
-  const [speciesOptions, setSpeciesOptions] = useState<string[]>([
-    'Doré jaune',
-    'Brochet',
-    'Truite mouchetée',
-    'Touladi',
-    'Site prometteur',
-  ]);
-  const [selectedSpecies, setSelectedSpecies] = useState<string | null>('Doré jaune');
+  // Manual fields — espèces actives depuis les réglages utilisateur
+  const [selectedSpecies, setSelectedSpecies] = useState<string | null>(null);
   const [selectedLure, setSelectedLure] = useState<UserLure | null>(null);
   const [showLurePicker, setShowLurePicker] = useState(false);
   const [showLureForm, setShowLureForm] = useState(false);
@@ -472,41 +467,30 @@ export default function LogCatchScreen() {
     };
   }, [user?.id]);
 
+  // Initialise l'espèce sélectionnée quand la liste active change
+  useEffect(() => {
+    if (activeSpecies.length === 0) return;
+    setSelectedSpecies((prev) => {
+      if (prev && activeSpecies.includes(prev)) return prev;
+      return prefillSpecies && activeSpecies.includes(prefillSpecies)
+        ? prefillSpecies
+        : activeSpecies[0];
+    });
+  }, [activeSpecies, prefillSpecies]);
+
   useEffect(() => {
     const loadPreferences = async () => {
       if (!user?.id) return;
       try {
-        const [profileData, lures] = await Promise.all([
-          supabase
-            .from('profiles')
-            .select('preferred_species')
-            .eq('id', user.id)
-            .maybeSingle()
-            .then(({ data }) => data),
-          loadLuresWithCache(user.id),
-        ]);
-
-        if (profileData?.preferred_species && Array.isArray(profileData.preferred_species)) {
-          const arr = profileData.preferred_species.filter((s: unknown) => typeof s === 'string');
-          if (arr.length > 0) {
-            setSpeciesOptions(arr);
-            setSelectedSpecies(arr[0]);
-          }
-        }
-
+        const lures = await loadLuresWithCache(user.id);
         setUserLures(lures);
 
-        // Préremplissage depuis la prise rapide du voyage (priorité sur les défauts)
-        if (prefillSpecies) {
-          setSelectedSpecies(prefillSpecies);
-          setSpeciesOptions((prev) => prev.includes(prefillSpecies) ? prev : [prefillSpecies, ...prev]);
-        }
         if (prefillLure) {
           const lureObj = lures.find((l) => l.name === prefillLure);
           if (lureObj) setSelectedLure(lureObj);
         }
       } catch (error) {
-        console.warn('[LogCatch] Erreur chargement préférences', error);
+        console.warn('[LogCatch] Erreur chargement leurres', error);
       }
     };
 
@@ -925,7 +909,7 @@ export default function LogCatchScreen() {
         <View style={styles.section}>
           <SectionTitle>🐟 Espèce</SectionTitle>
           <View style={styles.chipRow}>
-            {speciesOptions.map((s) => (
+            {activeSpecies.map((s) => (
               <Chip
                 key={s}
                 label={s}

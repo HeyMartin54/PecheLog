@@ -10,11 +10,18 @@ export type SpeciesColorMap = Record<string, string>;
 export function useSpeciesColors() {
   const [customColors, setCustomColors] = useState<SpeciesColorMap>({});
 
-  useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then((raw) => { if (raw) setCustomColors(JSON.parse(raw)); })
-      .catch(() => {});
+  const loadFromStorage = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      setCustomColors(raw ? JSON.parse(raw) : {});
+    } catch {
+      setCustomColors({});
+    }
   }, []);
+
+  useEffect(() => {
+    loadFromStorage();
+  }, [loadFromStorage]);
 
   const getColor = useCallback(
     (species: string): string => customColors[species] ?? getSpeciesColor(species),
@@ -34,5 +41,5 @@ export function useSpeciesColors() {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
   }, [customColors]);
 
-  return { getColor, setColor, resetColor, customColors };
+  return { getColor, setColor, resetColor, customColors, refresh: loadFromStorage };
 }

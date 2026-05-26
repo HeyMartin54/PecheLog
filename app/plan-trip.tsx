@@ -24,6 +24,7 @@ import {
   setCachedLures,
   type UserLure,
 } from '@/lib/lureStorage';
+import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
 import { SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { useAuth } from '@/contexts/AuthContext';
@@ -37,8 +38,6 @@ import {
   type TripLake,
 } from '@/lib/tripStorage';
 
-const SPECIES_LIST = Object.keys(SPECIES_CONFIG).filter((s) => s !== 'Site prometteur');
-
 function generateId(): string {
   return `trip_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
 }
@@ -49,6 +48,8 @@ export default function PlanTripScreen() {
   const { user } = useAuth();
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const isEditMode = mode === 'edit';
+  const { activeSpecies } = useActiveSpecies();
+  const fishSpecies = activeSpecies.filter((s) => s !== 'Site prometteur');
 
   const [lakes, setLakes] = useState<TripLake[]>([{ name: '', targetSpecies: [] }]);
   const [companions, setCompanions] = useState<string[]>([]);
@@ -272,20 +273,22 @@ export default function PlanTripScreen() {
 
             <Text style={styles.subLabel}>ESPÈCES CIBLES</Text>
             <View style={styles.chipRow}>
-              {SPECIES_LIST.map((s) => {
+              {fishSpecies.map((s) => {
                 const selected = lake.targetSpecies.includes(s);
                 const cfg = SPECIES_CONFIG[s];
+                const chipColor = cfg?.color ?? '#8899AA';
+                const chipBgColor = cfg?.bgColor ?? 'rgba(136,153,170,0.15)';
                 return (
                   <TouchableOpacity
                     key={s}
                     style={[
                       styles.chip,
-                      selected && { backgroundColor: cfg.bgColor, borderColor: cfg.color },
+                      selected && { backgroundColor: chipBgColor, borderColor: chipColor },
                     ]}
                     onPress={() => toggleLakeSpecies(index, s)}
                     activeOpacity={0.75}
                   >
-                    <Text style={[styles.chipText, selected && { color: cfg.color }]}>{s}</Text>
+                    <Text style={[styles.chipText, selected && { color: chipColor }]}>{s}</Text>
                   </TouchableOpacity>
                 );
               })}

@@ -22,6 +22,7 @@ import LocationPickerMap from '@/components/LocationPickerMap';
 import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
 import { supabase } from '@/lib/supabase';
+import { uploadMediaFile } from '@/lib/uploadMedia';
 import { loadCatchesCache } from '@/lib/catchCache';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useAuth } from '@/contexts/AuthContext';
@@ -191,6 +192,7 @@ export default function CatchDetailScreen() {
   const [weightLbs, setWeightLbs] = useState('');
   const [lengthInches, setLengthInches] = useState('');
   const [mediaItems, setMediaItems] = useState<CatchMedia[]>([]);
+  const [newMedia, setNewMedia] = useState<{ uri: string; type: 'photo' | 'video' }[]>([]);
   const [notes, setNotes] = useState('');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
@@ -317,8 +319,8 @@ export default function CatchDetailScreen() {
 
   function handleEditToggle() {
     if (editing && catch_) {
-      // Cancel — reset form
       populateForm(catch_);
+      setNewMedia([]);
     }
     setEditing((v) => !v);
   }
@@ -392,6 +394,43 @@ export default function CatchDetailScreen() {
     }
   };
 
+  const pickMediaFile = async (useCamera: boolean) => {
+    let result: ImagePicker.ImagePickerResult;
+    const options = { mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.8 as const };
+    if (useCamera) {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission refusée', "Autorisez l'accès à la caméra dans les réglages.");
+        return;
+      }
+      result = await ImagePicker.launchCameraAsync(options);
+    } else {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permissions', "Impossible d'accéder à ta galerie sans la permission de lecture.");
+        return;
+      }
+      result = await ImagePicker.launchImageLibraryAsync(options);
+    }
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      const type: 'photo' | 'video' = asset.type === 'video' ? 'video' : 'photo';
+      setNewMedia((prev) => [...prev, { uri: asset.uri, type }]);
+    }
+  };
+
+  const handlePickMedia = () => {
+    if (Platform.OS === 'web') {
+      pickMediaFile(false);
+      return;
+    }
+    Alert.alert('Ajouter un média', 'Choisir une source', [
+      { text: 'Prendre une photo', onPress: () => pickMediaFile(true) },
+      { text: 'Choisir dans la bibliothèque', onPress: () => pickMediaFile(false) },
+      { text: 'Annuler', style: 'cancel' },
+    ]);
+  };
+
   async function handleSave() {
     if (!catch_) return;
     if (!species.trim()) {
@@ -430,6 +469,22 @@ export default function CatchDetailScreen() {
       }
 
       setCatch({ ...catch_, ...updates });
+
+      // Upload des nouveaux médias ajoutés en mode édition
+      for (const item of newMedia) {
+        try {
+          const { storagePath } = await uploadMediaFile(item.uri, user!.id, catch_.id, item.type);
+          const { data: inserted } = await supabase
+            .from('catch_media')
+            .insert({ catch_id: catch_.id, media_type: item.type, storage_path: storagePath, uploaded: true })
+            .select()
+            .single();
+          if (inserted) setMediaItems((prev) => [...prev, inserted as CatchMedia]);
+        } catch (mediaErr) {
+          console.warn('[CatchDetail] Erreur upload media', mediaErr);
+        }
+      }
+      setNewMedia([]);
       setEditing(false);
     } finally {
       setSaving(false);
@@ -718,7 +773,7 @@ export default function CatchDetailScreen() {
           )}
 
           {/* Thumbnails des médias */}
-          {mediaItems.length > 0 && (
+          {(mediaItems.length > 0 || newMedia.length > 0 || editing) && (
             <View style={styles.mediaThumbnailRow}>
               {mediaItems.map((item) => {
                 const uri = item.uploaded
@@ -737,6 +792,24 @@ export default function CatchDetailScreen() {
                   </View>
                 );
               })}
+              {newMedia.map((item, idx) => (
+                <View key={`new-${idx}`} style={styles.mediaThumbnail}>
+                  <Image source={{ uri: item.uri }} style={styles.mediaThumbnailImg} />
+                  {editing && (
+                    <TouchableOpacity
+                      style={styles.mediaThumbnailDelete}
+                      onPress={() => setNewMedia((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      <Text style={styles.mediaThumbnailDeleteText}>✕</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+              {editing && (
+                <TouchableOpacity style={styles.mediaAddBtn} onPress={handlePickMedia} activeOpacity={0.8}>
+                  <Text style={styles.mediaAddIcon}>📷</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
         </SectionCard>
@@ -1448,6 +1521,36 @@ const styles = StyleSheet.create({
   mediaThumbnailImg: {
     width: '100%',
     height: '100%',
+  },
+  mediaThumbnailDelete: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mediaThumbnailDeleteText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  mediaAddBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    backgroundColor: colors.surface2,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mediaAddIcon: {
+    fontSize: 26,
   },
   videoOverlay: {
     ...StyleSheet.absoluteFillObject,
