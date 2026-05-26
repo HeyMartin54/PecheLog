@@ -130,7 +130,7 @@ const speciesAvatarStyles = StyleSheet.create({
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
   const insets = useSafeAreaInsets();
   const { coords, lakeName } = useLocation();
   const { temperatureC, windKmh, windDirection } = useWeather(
@@ -171,13 +171,12 @@ export default function HomeScreen() {
   };
 
   const loadHomeData = useCallback(async () => {
-    if (!user?.id) return;
-
-    const effectiveUserId = user.id;
+    const effectiveUserId = user?.id ?? cachedUserId;
+    if (!effectiveUserId) return;
     setHomeDataLoading(true);
 
-    // Si hors-ligne : charger depuis le cache
-    if (isConnected === false) {
+    // Pas de session active ou hors-ligne → toujours utiliser le cache
+    if (!user?.id || isConnected === false) {
       const cached = await loadCatchesCache(effectiveUserId);
       if (cached) {
         applyList(cached as CatchRow[]);
@@ -189,18 +188,20 @@ export default function HomeScreen() {
 
     setFromCache(false);
     try {
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('display_name')
-        .eq('id', user.id)
-        .maybeSingle();
+      if (user?.id) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('display_name')
+          .eq('id', user.id)
+          .maybeSingle();
 
-      if (profileError) {
-        console.warn('[Home] Erreur profil', profileError);
-      } else if (profile?.display_name?.trim()) {
-        setDisplayName(profile.display_name.trim());
-      } else if (user.email) {
-        setDisplayName(user.email.split('@')[0] ?? 'Pêcheur');
+        if (profileError) {
+          console.warn('[Home] Erreur profil', profileError);
+        } else if (profile?.display_name?.trim()) {
+          setDisplayName(profile.display_name.trim());
+        } else if (user.email) {
+          setDisplayName(user.email.split('@')[0] ?? 'Pêcheur');
+        }
       }
 
       const { data: rows, error: catchesError } = await supabase
@@ -224,11 +225,11 @@ export default function HomeScreen() {
     } finally {
       setHomeDataLoading(false);
     }
-  }, [user?.id, user?.email, isConnected]);
+  }, [user?.id, user?.email, cachedUserId, isConnected]);
 
   useFocusEffect(
     useCallback(() => {
-      loadHomeData();
+      loadHomeData().catch(console.warn);
     }, [loadHomeData]),
   );
 

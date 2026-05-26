@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useAuth } from '@/contexts/AuthContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { colors } from '@/lib/theme';
 
 function TabBarIcon(props: {
@@ -35,14 +36,19 @@ const tabIconStyles = StyleSheet.create({
 
 export default function TabLayout() {
   const router = useRouter();
-  const { session, initializing } = useAuth();
+  const { session, initializing, cachedUserId } = useAuth();
+  const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (!initializing && !session) {
-      router.replace('/login');
+      // Hors-ligne avec un userId connu → accès en lecture seule au cache, pas de redirect
+      const hasOfflineAccess = isConnected === false && cachedUserId !== null;
+      if (!hasOfflineAccess) {
+        router.replace('/login');
+      }
     }
-  }, [session, initializing, router]);
+  }, [session, initializing, isConnected, cachedUserId, router]);
 
   return (
     <Tabs

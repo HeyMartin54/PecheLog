@@ -8,6 +8,7 @@ export type UserLure = {
   size: string | null;
   color: string | null;
   notes: string | null;
+  photo_url: string | null;
   created_at: string;
 };
 
@@ -16,6 +17,7 @@ type LureInput = {
   size: string | null;
   color: string | null;
   notes: string | null;
+  photo_url?: string | null;
 };
 
 const cacheKey = (userId: string) => `user_lures_cache_${userId}`;
@@ -38,7 +40,7 @@ export async function setCachedLures(userId: string, lures: UserLure[]): Promise
 export async function loadUserLures(userId: string): Promise<UserLure[]> {
   const { data, error } = await supabase
     .from('user_lures')
-    .select('id, user_id, name, size, color, notes, created_at')
+    .select('id, user_id, name, size, color, notes, photo_url, created_at')
     .eq('user_id', userId)
     .order('name');
 

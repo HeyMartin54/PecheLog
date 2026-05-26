@@ -9,7 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import MapView, { Callout, Marker, Region } from 'react-native-maps';
+import MapView, { Marker, Region } from 'react-native-maps';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -46,6 +46,14 @@ type FilterState = {
 };
 
 type FilterPanel = 'species' | 'lure' | 'dates' | 'weather' | null;
+
+type Cluster = {
+  id: string;
+  latitude: number;
+  longitude: number;
+  catches: CatchPin[];
+  speciesCounts: Record<string, number>;
+};
 
 const EMPTY_FILTERS: FilterState = { species: [], lures: [], dateFrom: null, dateTo: null, weather: [] };
 
@@ -89,11 +97,48 @@ function toggleItem(arr: string[], item: string): string[] {
   return arr.includes(item) ? arr.filter((x) => x !== item) : [...arr, item];
 }
 
+function clusterCatches(catches: CatchPin[], latDelta: number, lngDelta: number): Cluster[] {
+  // Au zoom maximum, afficher tous les points individuellement
+  if (latDelta < 0.005) {
+    return catches.map((c) => ({
+      id: c.id,
+      latitude: c.latitude,
+      longitude: c.longitude,
+      catches: [c],
+      speciesCounts: { [c.species]: 1 },
+    }));
+  }
+  const latR = latDelta * 0.08;
+  const lngR = lngDelta * 0.08;
+  const visited = new Set<string>();
+  const clusters: Cluster[] = [];
+  for (const c of catches) {
+    if (visited.has(c.id)) continue;
+    const nearby = catches.filter((o) => {
+      if (visited.has(o.id)) return false;
+      return Math.abs(o.latitude - c.latitude) < latR && Math.abs(o.longitude - c.longitude) < lngR;
+    });
+    nearby.forEach((o) => visited.add(o.id));
+    const avgLat = nearby.reduce((s, o) => s + o.latitude, 0) / nearby.length;
+    const avgLng = nearby.reduce((s, o) => s + o.longitude, 0) / nearby.length;
+    const speciesCounts: Record<string, number> = {};
+    nearby.forEach((o) => { speciesCounts[o.species] = (speciesCounts[o.species] ?? 0) + 1; });
+    clusters.push({
+      id: nearby.map((o) => o.id).join('|'),
+      latitude: avgLat,
+      longitude: avgLng,
+      catches: nearby,
+      speciesCounts,
+    });
+  }
+  return clusters;
+}
+
 // ─── Composant principal ──────────────────────────────────────────────────────
 
 export default function MapScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,16 +153,18 @@ export default function MapScreen() {
   const [openPanel, setOpenPanel] = useState<FilterPanel>(null);
   const [showDatePicker, setShowDatePicker] = useState<'from' | 'to' | null>(null);
   const [fromCache, setFromCache] = useState(false);
+  const [selectedCatch, setSelectedCatch] = useState<CatchPin | null>(null);
+  const [mapDeltas, setMapDeltas] = useState({ lat: 8, lng: 8 });
 
   // ─── Chargement ────────────────────────────────────────────────────────────
 
   const loadCatches = useCallback(async () => {
-    if (!user?.id) return;
-    const userId = user.id;
+    const userId = user?.id ?? cachedUserId;
+    if (!userId) return;
     setLoading(true);
 
-    // Si hors-ligne : charger depuis le cache
-    if (isConnected === false) {
+    // Pas de session active ou hors-ligne → toujours utiliser le cache
+    if (!user?.id || isConnected === false) {
       const cached = await loadCatchesCache(userId);
       if (cached) {
         const valid = cached.filter(
@@ -170,9 +217,9 @@ export default function MapScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id, isConnected]);
+  }, [user?.id, cachedUserId, isConnected]);
 
-  useFocusEffect(useCallback(() => { loadCatches(); }, [loadCatches]));
+  useFocusEffect(useCallback(() => { loadCatches().catch(console.warn); }, [loadCatches]));
 
   // ─── Listes dynamiques pour les filtres ────────────────────────────────────
 
@@ -211,6 +258,11 @@ export default function MapScreen() {
   }, [catches, filters]);
 
   const activeCount = countActiveFilters(filters);
+
+  const clusters = useMemo(
+    () => clusterCatches(visibleCatches, mapDeltas.lat, mapDeltas.lng),
+    [visibleCatches, mapDeltas],
+  );
 
   // ─── Panneau de filtre ─────────────────────────────────────────────────────
 
@@ -358,27 +410,93 @@ export default function MapScreen() {
         initialRegion={{ latitude: 47.5, longitude: -71.5, latitudeDelta: 8, longitudeDelta: 8 }}
         showsUserLocation
         showsMyLocationButton
+        onPress={() => setSelectedCatch(null)}
+        onRegionChangeComplete={(r) => setMapDeltas({ lat: r.latitudeDelta, lng: r.longitudeDelta })}
       >
-        {visibleCatches.map((c) => (
-          <Marker key={c.id} coordinate={{ latitude: c.latitude, longitude: c.longitude }} anchor={{ x: 0.5, y: 1 }}>
-            <View style={styles.pinContainer}>
-              <View style={[styles.pinShape, { backgroundColor: getColor(c.species) }]}>
-                <View style={styles.pinDot} />
+        {clusters.map((cluster) => {
+          const isCluster = cluster.catches.length > 1;
+          const singleCatch = cluster.catches[0];
+
+          if (!isCluster) {
+            return (
+              <Marker
+                key={cluster.id}
+                coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
+                anchor={{ x: 0.5, y: 1 }}
+
+                onPress={(e) => { e.stopPropagation(); setSelectedCatch(singleCatch); setOpenPanel(null); }}
+              >
+                <View style={styles.pinContainer}>
+                  <View style={[styles.pinShape, { backgroundColor: getColor(singleCatch.species) }]}>
+                    <View style={styles.pinDot} />
+                  </View>
+                </View>
+              </Marker>
+            );
+          }
+
+          const sortedSpecies = Object.entries(cluster.speciesCounts).sort((a, b) => b[1] - a[1]);
+          const total = cluster.catches.length;
+
+          return (
+            <Marker
+              key={cluster.id}
+              coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+              onPress={(e) => {
+                e.stopPropagation();
+                setSelectedCatch(null);
+                setOpenPanel(null);
+                const lats = cluster.catches.map((o) => o.latitude);
+                const lngs = cluster.catches.map((o) => o.longitude);
+                mapRef.current?.animateToRegion({
+                  latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
+                  longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+                  latitudeDelta: Math.max((Math.max(...lats) - Math.min(...lats)) * 2.5, 0.01),
+                  longitudeDelta: Math.max((Math.max(...lngs) - Math.min(...lngs)) * 2.5, 0.01),
+                }, 400);
+              }}
+            >
+              <View style={styles.clusterOuter}>
+                <View style={styles.clusterInner}>
+                  {sortedSpecies.map(([species, cnt]) => (
+                    <View key={species} style={{ flex: cnt, backgroundColor: getColor(species) }} />
+                  ))}
+                </View>
+                <Text style={[styles.clusterCount, total > 99 && { fontSize: 11 }]}>
+                  {total > 99 ? '99+' : total}
+                </Text>
               </View>
-            </View>
-            <Callout style={styles.calloutWrapper} onPress={() => router.push(`/catch-detail?id=${c.id}`)}>
-              <View style={styles.callout}>
-                <Text style={styles.calloutSpecies}>{c.species}</Text>
-                {!!c.lake_name && <Text style={styles.calloutRow}>📍 {c.lake_name}</Text>}
-                {!!c.lure && <Text style={styles.calloutRow}>🪝 {c.lure}</Text>}
-                {c.weight_lbs != null && <Text style={styles.calloutRow}>⚖️ {c.weight_lbs.toFixed(1)} lb</Text>}
-                <Text style={styles.calloutDate}>{formatDateFr(c.caught_at)}</Text>
-                <Text style={styles.calloutLink}>Voir le détail →</Text>
-              </View>
-            </Callout>
-          </Marker>
-        ))}
+            </Marker>
+          );
+        })}
       </MapView>
+
+      {/* Callout personnalisé (fonctionne sur Android + iOS) */}
+      {selectedCatch && (
+        <TouchableOpacity
+          style={styles.customCallout}
+          onPress={() => { setSelectedCatch(null); router.push(`/catch-detail?id=${selectedCatch.id}`); }}
+          activeOpacity={0.92}
+        >
+          <View style={styles.calloutInner}>
+            <View style={[styles.calloutAccent, { backgroundColor: getColor(selectedCatch.species) }]} />
+            <View style={styles.calloutBody}>
+              <Text style={styles.calloutSpecies}>{selectedCatch.species}</Text>
+              {!!selectedCatch.lake_name && <Text style={styles.calloutRow}>📍 {selectedCatch.lake_name}</Text>}
+              {!!selectedCatch.lure && <Text style={styles.calloutRow}>🪝 {selectedCatch.lure}</Text>}
+              {selectedCatch.weight_lbs != null && (
+                <Text style={styles.calloutRow}>⚖️ {selectedCatch.weight_lbs.toFixed(1)} lb</Text>
+              )}
+              <Text style={styles.calloutDate}>{formatDateFr(selectedCatch.caught_at)}</Text>
+            </View>
+            <View style={styles.calloutArrow}>
+              <Text style={styles.calloutLink}>→</Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+      )}
 
       {/* Indicateur données locales */}
       {fromCache && (
@@ -526,12 +644,73 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.85)',
   },
 
-  calloutWrapper: { width: 200 },
-  callout: { padding: 10 },
+  customCallout: {
+    position: 'absolute',
+    bottom: 120,
+    left: 20,
+    right: 20,
+    zIndex: 20,
+    borderRadius: 16,
+    backgroundColor: '#F0F6FF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 12,
+    overflow: 'hidden',
+  },
+  calloutInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  calloutAccent: {
+    width: 6,
+    alignSelf: 'stretch',
+  },
+  calloutBody: {
+    flex: 1,
+    padding: 14,
+  },
+  calloutArrow: {
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   calloutSpecies: { fontSize: 15, fontWeight: '700', color: '#0D1E2F', marginBottom: 5 },
-  calloutRow: { fontSize: 12, color: '#3A5068', marginBottom: 3 },
+  calloutRow: { fontSize: 13, color: '#3A5068', marginBottom: 3 },
   calloutDate: { marginTop: 4, fontSize: 11, color: '#6B8BA4' },
-  calloutLink: { marginTop: 7, fontSize: 12, color: colors.accent, fontWeight: '700' },
+  calloutLink: { fontSize: 22, color: colors.accent, fontWeight: '700' },
+
+  // ── Clusters ──
+  clusterOuter: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
+    elevation: 8,
+  },
+  clusterInner: {
+    position: 'absolute',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    overflow: 'hidden',
+    flexDirection: 'row',
+  },
+  clusterCount: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#fff',
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
 
   // ── Barre de filtres ──
   filterBar: {

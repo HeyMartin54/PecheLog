@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { Platform } from 'react-native';
 import * as Linking from 'expo-linking';
@@ -5,6 +6,8 @@ import * as WebBrowser from 'expo-web-browser';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 
 import { supabase } from '@/lib/supabase';
+
+const CACHED_USER_ID_KEY = '@pechelog_cached_user_id';
 
 // Ferme le navigateur OAuth si l'app est rouverte depuis un redirect (web uniquement)
 WebBrowser.maybeCompleteAuthSession();
@@ -23,6 +26,7 @@ type AuthContextType = {
   session: Session | null;
   user: User | null;
   initializing: boolean;
+  cachedUserId: string | null;
   signInWithGoogle: () => Promise<AuthError | null>;
   signInWithFacebook: () => Promise<AuthError | null>;
   signInWithApple: () => Promise<AuthError | null>;
@@ -182,6 +186,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [initializing, setInitializing] = useState(true);
+  const [cachedUserId, setCachedUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Charger le dernier userId connu pour le mode hors-ligne
+    AsyncStorage.getItem(CACHED_USER_ID_KEY).then((id) => {
+      if (id) setCachedUserId(id);
+    });
+  }, []);
 
   useEffect(() => {
     authLog.info('AuthProvider monté — abonnement onAuthStateChange');
@@ -193,6 +205,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setSession(newSession);
       setUser(newSession?.user ?? null);
+
+      // Persister l'userId pour accès hors-ligne aux données de cache
+      if (newSession?.user?.id) {
+        setCachedUserId(newSession.user.id);
+        AsyncStorage.setItem(CACHED_USER_ID_KEY, newSession.user.id).catch(() => {});
+      }
 
       if (event === 'INITIAL_SESSION') {
         authLog.info('INITIAL_SESSION reçu', { sessionExists: !!newSession });
@@ -274,6 +292,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session,
       user,
       initializing,
+      cachedUserId,
       signInWithGoogle,
       signInWithFacebook,
       signInWithApple,

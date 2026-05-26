@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -22,7 +23,9 @@ import {
   updateUserLure,
   type UserLure,
 } from '@/lib/lureStorage';
+import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import { uploadLureMedia } from '@/lib/uploadLureMedia';
 
 export default function MyLuresScreen() {
   const router = useRouter();
@@ -56,28 +59,50 @@ export default function MyLuresScreen() {
     setFormVisible(true);
   };
 
+  const resolvePhotoUrl = async (
+    localPhotoUri: string | null | undefined,
+    existingPhotoUrl: string | null | undefined,
+    userId: string,
+  ): Promise<string | null> => {
+    if (localPhotoUri === null) return null;
+    if (localPhotoUri === undefined) return existingPhotoUrl ?? null;
+    if (localPhotoUri.startsWith('https://')) return localPhotoUri;
+    try {
+      const { storagePath } = await uploadLureMedia(localPhotoUri, userId);
+      const { data: urlData } = supabase.storage.from('catch-media').getPublicUrl(storagePath);
+      return urlData.publicUrl;
+    } catch {
+      Alert.alert('Avertissement', 'La photo n\'a pas pu être uploadée. Le leurre sera sauvegardé sans photo.');
+      return existingPhotoUrl ?? null;
+    }
+  };
+
   const handleSave = async (data: {
     name: string;
     size: string | null;
     color: string | null;
     notes: string | null;
+    localPhotoUri: string | null | undefined;
   }) => {
     if (!user?.id) return;
     setFormVisible(false);
 
+    const { localPhotoUri, ...lureData } = data;
+    const photo_url = await resolvePhotoUrl(localPhotoUri, editingLure?.photo_url, user.id);
+
     if (editingLure) {
-      const ok = await updateUserLure(editingLure.id, data);
+      const ok = await updateUserLure(editingLure.id, { ...lureData, photo_url });
       if (!ok) {
         Alert.alert('Erreur', 'Impossible de modifier ce leurre.');
         return;
       }
       const updated = lures.map((l) =>
-        l.id === editingLure.id ? { ...l, ...data } : l,
+        l.id === editingLure.id ? { ...l, ...lureData, photo_url } : l,
       );
       setLures(updated);
       await setCachedLures(user.id, updated);
     } else {
-      const created = await createUserLure(user.id, data);
+      const created = await createUserLure(user.id, { ...lureData, photo_url });
       if (!created) {
         Alert.alert('Erreur', 'Impossible de créer ce leurre.');
         return;
@@ -105,9 +130,13 @@ export default function MyLuresScreen() {
     const subtitle = [item.size, item.color].filter(Boolean).join(' · ');
     return (
       <TouchableOpacity style={styles.row} onPress={() => openEdit(item)} activeOpacity={0.8}>
-        <View style={styles.lureIcon}>
-          <Text style={styles.lureIconText}>🪝</Text>
-        </View>
+        {item.photo_url ? (
+          <Image source={{ uri: item.photo_url }} style={styles.lurePhoto} resizeMode="cover" />
+        ) : (
+          <View style={styles.lureIcon}>
+            <Text style={styles.lureIconText}>🪝</Text>
+          </View>
+        )}
         <View style={styles.rowInfo}>
           <Text style={styles.rowName} numberOfLines={1}>{item.name}</Text>
           {!!subtitle && (
@@ -249,6 +278,13 @@ const styles = StyleSheet.create({
   },
   lureIconText: {
     fontSize: 22,
+  },
+  lurePhoto: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   rowInfo: {
     flex: 1,

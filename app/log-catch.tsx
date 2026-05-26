@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -30,7 +31,8 @@ import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
-import { enqueueOfflineCatch, trySyncOfflineCatches } from '@/lib/offlineSync';
+import { enqueueOfflineCatch, trySyncOfflineCatches, persistMediaForOffline } from '@/lib/offlineSync';
+import { uploadMediaFile } from '@/lib/uploadMedia';
 import { loadActiveTrip, saveLastCatchSettings, type Trip } from '@/lib/tripStorage';
 
 // ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
@@ -699,13 +701,16 @@ export default function LogCatchScreen() {
 
     setSaving(true);
     try {
-      const { error } = await supabase
+      const { data: insertedCatch, error } = await supabase
         .from('catches')
-        .insert(buildCatchInsertPayload(payload));
+        .insert(buildCatchInsertPayload(payload))
+        .select('id')
+        .single();
 
       if (error) {
         console.warn(`[LogCatch] Erreur lors de l'enregistrement en ligne, on bascule hors-ligne`, error);
-        await enqueueOfflineCatch({ payload, media });
+        const persistedMedia = await persistMediaForOffline(media);
+        await enqueueOfflineCatch({ payload, media: persistedMedia });
         await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
         Alert.alert(
           'Mode hors-ligne',
@@ -715,16 +720,34 @@ export default function LogCatchScreen() {
         return;
       }
 
+      // Upload des médias vers Supabase Storage
+      if (insertedCatch && media.length > 0) {
+        for (const item of media) {
+          try {
+            const { storagePath } = await uploadMediaFile(item.uri, effectiveUserId, insertedCatch.id, item.type);
+            await supabase.from('catch_media').insert({
+              catch_id: insertedCatch.id,
+              media_type: item.type,
+              storage_path: storagePath,
+              uploaded: true,
+            });
+          } catch (mediaErr) {
+            console.warn('[LogCatch] Erreur upload media', mediaErr);
+          }
+        }
+      }
+
       await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
       Alert.alert('Prise enregistrée', 'Ta prise a été enregistrée avec succès.');
       navigateAfterSave();
     } catch (error) {
       console.warn('[LogCatch] Erreur inattendue, stockage hors-ligne', error);
-      await enqueueOfflineCatch({ payload, media });
+      const persistedMedia = await persistMediaForOffline(media);
+      await enqueueOfflineCatch({ payload, media: persistedMedia });
       await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
       Alert.alert(
         'Mode hors-ligne',
-        'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
+        'Prise enregistrée localement. Elle sera synchronisées au retour du signal.',
       );
       navigateAfterSave();
     } finally {
@@ -750,7 +773,7 @@ export default function LogCatchScreen() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 100 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
       >
         {/* Section Emplacement */}
@@ -1081,6 +1104,27 @@ export default function LogCatchScreen() {
               <Text style={{ fontSize: 22 }}>📸</Text>
               <Text style={styles.mediaButtonText}>Ajouter photos / vidéos</Text>
             </TouchableOpacity>
+            {media.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
+                {media.map((item, idx) => (
+                  <View key={idx} style={styles.mediaThumbnailContainer}>
+                    <Image source={{ uri: item.uri }} style={styles.mediaThumbnailPreview} />
+                    {item.type === 'video' && (
+                      <View style={styles.mediaThumbnailVideoOverlay}>
+                        <Text style={{ color: '#fff', fontSize: 14 }}>▶</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      style={styles.mediaThumbnailRemove}
+                      onPress={() => setMedia((prev) => prev.filter((_, i) => i !== idx))}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
           </View>
         )}
 
@@ -1155,7 +1199,7 @@ export default function LogCatchScreen() {
             />
           )}
 
-          <View style={styles.pickerFooter}>
+          <View style={[styles.pickerFooter, { paddingBottom: 14 + insets.bottom }]}>
             <Text style={styles.pickerCoordsText}>
               {pickerCoord
                 ? `${pickerCoord.latitude.toFixed(5)}, ${pickerCoord.longitude.toFixed(5)}`
@@ -1349,7 +1393,6 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingTop: 20,
-    paddingBottom: 100,
   },
   section: {
     paddingHorizontal: 20,
@@ -1467,6 +1510,39 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: TEXT_MUTED,
     fontWeight: '500',
+  },
+  mediaThumbnailContainer: {
+    width: 72,
+    height: 72,
+    marginRight: 8,
+    borderRadius: 10,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  mediaThumbnailPreview: {
+    width: 72,
+    height: 72,
+  },
+  mediaThumbnailVideoOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  mediaThumbnailRemove: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   // ── Chips ────────────────────────────────────────────────────────────────────
   chip: {
@@ -1716,7 +1792,7 @@ const styles = StyleSheet.create({
   pickerMap: { flex: 1 },
   pickerFooter: {
     paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingTop: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: BORDER_COLOR,
     gap: 10,

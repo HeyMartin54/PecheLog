@@ -504,7 +504,7 @@ export default function CatchDetailScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 48 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         style={{ flex: 1 }}
@@ -905,7 +905,7 @@ export default function CatchDetailScreen() {
             />
           )}
 
-          <View style={styles.pickerFooter}>
+          <View style={[styles.pickerFooter, { paddingBottom: 14 + insets.bottom }]}>
             <Text style={styles.pickerCoordsText}>
               {pickerCoord
                 ? `${pickerCoord.latitude.toFixed(5)}, ${pickerCoord.longitude.toFixed(5)}`
@@ -1074,7 +1074,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 20,
-    paddingBottom: 48,
     gap: 16,
   },
 
@@ -1385,7 +1384,7 @@ const styles = StyleSheet.create({
   },
   pickerFooter: {
     paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingTop: 14,
     borderTopWidth: 1,
     borderTopColor: BORDER,
     gap: 10,

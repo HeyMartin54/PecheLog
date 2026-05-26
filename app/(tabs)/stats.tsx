@@ -340,7 +340,7 @@ const recStyles = StyleSheet.create({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function StatsScreen() {
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
   const [allCatches, setAllCatches] = useState<CatchRow[]>([]);
@@ -351,12 +351,12 @@ export default function StatsScreen() {
   const [fromCache, setFromCache] = useState(false);
 
   const loadData = useCallback(async () => {
-    if (!user?.id) return;
-    const userId = user.id;
+    const userId = user?.id ?? cachedUserId;
+    if (!userId) return;
     setLoading(true);
 
-    // Hors-ligne : charger depuis le cache
-    if (isConnected === false) {
+    // Pas de session active ou hors-ligne → toujours utiliser le cache
+    if (!user?.id || isConnected === false) {
       const cached = await loadCatchesCache(userId);
       if (cached) {
         setAllCatches(cached as unknown as CatchRow[]);
@@ -384,11 +384,11 @@ export default function StatsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id, isConnected]);
+  }, [user?.id, cachedUserId, isConnected]);
 
   useFocusEffect(
     useCallback(() => {
-      loadData();
+      loadData().catch(console.warn);
     }, [loadData]),
   );
 
@@ -532,7 +532,7 @@ export default function StatsScreen() {
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[styles.scroll, { paddingBottom: 96 + insets.bottom }]}
           showsVerticalScrollIndicator={false}
         >
           {/* ── Filtre période ────────────────────────────────────────── */}
@@ -781,7 +781,7 @@ const styles = StyleSheet.create({
     maxWidth: 280,
   },
 
-  scroll: { paddingBottom: 96 },
+  scroll: {},
 
   filterRow: {
     flexDirection: 'row',

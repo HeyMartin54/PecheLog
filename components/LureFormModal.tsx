@@ -1,6 +1,8 @@
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
 import {
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -24,7 +26,13 @@ type LureFormData = {
 type Props = {
   visible: boolean;
   lure?: UserLure;
-  onSave: (data: { name: string; size: string | null; color: string | null; notes: string | null }) => void;
+  onSave: (data: {
+    name: string;
+    size: string | null;
+    color: string | null;
+    notes: string | null;
+    localPhotoUri: string | null | undefined;
+  }) => void;
   onDelete?: () => void;
   onClose: () => void;
 };
@@ -33,6 +41,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
   const isEditing = !!lure;
 
   const [form, setForm] = useState<LureFormData>({ name: '', size: '', color: '', notes: '' });
+  const [localPhotoUri, setLocalPhotoUri] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (visible) {
@@ -42,6 +51,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
         color: lure?.color ?? '',
         notes: lure?.notes ?? '',
       });
+      setLocalPhotoUri(lure?.photo_url ?? null);
     }
   }, [visible, lure]);
 
@@ -56,6 +66,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
       size: form.size.trim() || null,
       color: form.color.trim() || null,
       notes: form.notes.trim() || null,
+      localPhotoUri,
     });
   };
 
@@ -68,6 +79,60 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
         { text: 'Supprimer', style: 'destructive', onPress: onDelete },
       ],
     );
+  };
+
+  const pickPhoto = async (useCamera: boolean) => {
+    let result: ImagePicker.ImagePickerResult;
+    const options: ImagePicker.ImagePickerOptions = {
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    };
+
+    if (useCamera) {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission refusée', 'Autorisez l\'accès à la caméra dans les réglages.');
+        return;
+      }
+      result = await ImagePicker.launchCameraAsync(options);
+    } else {
+      result = await ImagePicker.launchImageLibraryAsync(options);
+    }
+
+    if (!result.canceled && result.assets[0]) {
+      setLocalPhotoUri(result.assets[0].uri);
+    }
+  };
+
+  const handleAddPhoto = () => {
+    if (Platform.OS === 'web') {
+      pickPhoto(false);
+      return;
+    }
+    Alert.alert('Photo du leurre', 'Choisir une source', [
+      { text: 'Prendre une photo', onPress: () => pickPhoto(true) },
+      { text: 'Choisir dans la bibliothèque', onPress: () => pickPhoto(false) },
+      { text: 'Annuler', style: 'cancel' },
+    ]);
+  };
+
+  const handleChangePhoto = () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Photo du leurre', 'Modifier la photo', [
+        { text: 'Changer', onPress: () => pickPhoto(false) },
+        { text: 'Supprimer', style: 'destructive', onPress: () => setLocalPhotoUri(null) },
+        { text: 'Annuler', style: 'cancel' },
+      ]);
+      return;
+    }
+    Alert.alert('Photo du leurre', 'Modifier la photo', [
+      { text: 'Prendre une photo', onPress: () => pickPhoto(true) },
+      { text: 'Choisir dans la bibliothèque', onPress: () => pickPhoto(false) },
+      { text: 'Supprimer la photo', style: 'destructive', onPress: () => setLocalPhotoUri(null) },
+      { text: 'Annuler', style: 'cancel' },
+    ]);
   };
 
   return (
@@ -135,6 +200,22 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
               onChangeText={(v) => setForm((p) => ({ ...p, color: v }))}
               returnKeyType="next"
             />
+          </View>
+
+          {/* Photo */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Photo</Text>
+            {localPhotoUri ? (
+              <TouchableOpacity onPress={handleChangePhoto} activeOpacity={0.85}>
+                <Image source={{ uri: localPhotoUri }} style={styles.photoPreview} resizeMode="cover" />
+                <Text style={styles.photoChangeHint}>Appuyer pour modifier</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.photoAddBtn} onPress={handleAddPhoto} activeOpacity={0.8}>
+                <Text style={styles.photoAddIcon}>📷</Text>
+                <Text style={styles.photoAddText}>Ajouter une photo</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Autres infos */}
@@ -216,6 +297,37 @@ const styles = StyleSheet.create({
   notesInput: {
     height: 90,
     textAlignVertical: 'top',
+  },
+  photoPreview: {
+    width: 100,
+    height: 100,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  photoChangeHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: spacing.xs,
+  },
+  photoAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderStyle: 'dashed',
+  },
+  photoAddIcon: {
+    fontSize: 18,
+  },
+  photoAddText: {
+    fontSize: 14,
+    color: colors.accent,
+    fontWeight: '500',
   },
   deleteBtn: {
     marginTop: spacing.xl,

@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import {
   FlatList,
+  Image,
   Modal,
   Platform,
   StyleSheet,
@@ -62,9 +63,13 @@ export default function LurePicker({
           onPress={() => { onSelect(item); if (selectedLureNames == null) handleClose(); }}
           activeOpacity={0.8}
         >
-          <View style={[styles.lureIcon, isSelected && styles.lureIconSelected]}>
-            <Text style={styles.lureIconText}>🪝</Text>
-          </View>
+          {item.photo_url ? (
+            <Image source={{ uri: item.photo_url }} style={styles.lurePhoto} resizeMode="cover" />
+          ) : (
+            <View style={[styles.lureIcon, isSelected && styles.lureIconSelected]}>
+              <Text style={styles.lureIconText}>🪝</Text>
+            </View>
+          )}
           <View style={styles.rowInfo}>
             <Text style={[styles.rowName, isSelected && styles.rowNameSelected]} numberOfLines={1}>
               {item.name}
@@ -247,6 +252,13 @@ const styles = StyleSheet.create({
   },
   lureIconText: {
     fontSize: 20,
+  },
+  lurePhoto: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   rowInfo: {
     flex: 1,

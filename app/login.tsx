@@ -74,7 +74,7 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.inner, { paddingTop: insets.top + 32 }]}>
+      <View style={[styles.inner, { paddingTop: insets.top + 32, paddingBottom: spacing.xxl + insets.bottom }]}>
 
         {/* Logo */}
         <View style={styles.logoContainer}>
@@ -166,7 +166,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: spacing.xl,
     paddingTop: 0,
-    paddingBottom: spacing.xxl,
+    paddingBottom: 0,
     justifyContent: 'flex-start',
   },
 

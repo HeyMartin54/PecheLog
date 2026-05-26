@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -50,6 +50,14 @@ type FilterState = {
 
 type FilterPanel = 'species' | 'lure' | 'dates' | 'weather' | null;
 
+type Cluster = {
+  id: string;
+  latitude: number;
+  longitude: number;
+  catches: CatchPin[];
+  speciesCounts: Record<string, number>;
+};
+
 const EMPTY_FILTERS: FilterState = { species: [], lures: [], dateFrom: null, dateTo: null, weather: [] };
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -81,6 +89,62 @@ function toggleItem(arr: string[], item: string): string[] {
   return arr.includes(item) ? arr.filter((x) => x !== item) : [...arr, item];
 }
 
+function clusterCatches(catches: CatchPin[], latDelta: number, lngDelta: number): Cluster[] {
+  // Au zoom maximum, afficher tous les points individuellement
+  if (latDelta < 0.005) {
+    return catches.map((c) => ({
+      id: c.id,
+      latitude: c.latitude,
+      longitude: c.longitude,
+      catches: [c],
+      speciesCounts: { [c.species]: 1 },
+    }));
+  }
+  const latR = latDelta * 0.08;
+  const lngR = lngDelta * 0.08;
+  const visited = new Set<string>();
+  const clusters: Cluster[] = [];
+  for (const c of catches) {
+    if (visited.has(c.id)) continue;
+    const nearby = catches.filter((o) => {
+      if (visited.has(o.id)) return false;
+      return Math.abs(o.latitude - c.latitude) < latR && Math.abs(o.longitude - c.longitude) < lngR;
+    });
+    nearby.forEach((o) => visited.add(o.id));
+    const avgLat = nearby.reduce((s, o) => s + o.latitude, 0) / nearby.length;
+    const avgLng = nearby.reduce((s, o) => s + o.longitude, 0) / nearby.length;
+    const speciesCounts: Record<string, number> = {};
+    nearby.forEach((o) => { speciesCounts[o.species] = (speciesCounts[o.species] ?? 0) + 1; });
+    clusters.push({
+      id: nearby.map((o) => o.id).join('|'),
+      latitude: avgLat,
+      longitude: avgLng,
+      catches: nearby,
+      speciesCounts,
+    });
+  }
+  return clusters;
+}
+
+function makeClusterIcon(speciesCounts: Record<string, number>, getColor: (s: string) => string) {
+  if (typeof window === 'undefined') return undefined;
+  const L = require('leaflet');
+  const sorted = Object.entries(speciesCounts).sort((a, b) => b[1] - a[1]);
+  const total = Object.values(speciesCounts).reduce((s, n) => s + n, 0);
+  const segments = sorted
+    .map(([sp, cnt]) => `<div style="flex:${cnt};background:${getColor(sp)};height:100%;"></div>`)
+    .join('');
+  const label = total > 99 ? '99+' : String(total);
+  const fontSize = total > 99 ? 11 : 14;
+  const html = `<div style="width:46px;height:46px;border-radius:50%;background:#fff;position:relative;box-shadow:0 3px 8px rgba(0,0,0,0.35);">
+    <div style="position:absolute;top:4px;left:4px;width:38px;height:38px;border-radius:50%;overflow:hidden;display:flex;flex-direction:row;">${segments}</div>
+    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
+      <span style="font-size:${fontSize}px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.6);">${label}</span>
+    </div>
+  </div>`;
+  return L.divIcon({ className: '', html, iconSize: [46, 46], iconAnchor: [23, 23] });
+}
+
 function makeIcon(color: string) {
   if (typeof window === 'undefined') return undefined;
   const L = require('leaflet');
@@ -93,11 +157,30 @@ function makeIcon(color: string) {
   });
 }
 
-// ─── MapFitter ────────────────────────────────────────────────────────────────
+// ─── MapController ────────────────────────────────────────────────────────────
 
-function MapFitter({ catches }: { catches: CatchPin[] }) {
+function MapController({ catches, onBoundsChange, mapRef }: {
+  catches: CatchPin[];
+  onBoundsChange: (latDelta: number, lngDelta: number) => void;
+  mapRef: React.MutableRefObject<any>;
+}) {
   const map = useMap?.();
   const fitted = useRef(false);
+
+  useEffect(() => {
+    if (!map) return;
+    mapRef.current = map;
+    const update = () => {
+      const b = map.getBounds();
+      onBoundsChange(b.getNorth() - b.getSouth(), b.getEast() - b.getWest());
+    };
+    map.on('zoomend', update);
+    map.on('moveend', update);
+    update();
+    return () => { map.off('zoomend', update); map.off('moveend', update); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map]);
+
   useEffect(() => {
     if (!map || fitted.current || catches.length === 0) return;
     const L = require('leaflet');
@@ -105,6 +188,7 @@ function MapFitter({ catches }: { catches: CatchPin[] }) {
     map.fitBounds(bounds, { padding: [40, 40] });
     fitted.current = true;
   }, [map, catches]);
+
   return null;
 }
 
@@ -112,10 +196,12 @@ function MapFitter({ catches }: { catches: CatchPin[] }) {
 
 export default function MapScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
   const isConnected = useNetworkStatus();
 
   const { getColor } = useSpeciesColors();
+
+  const leafletMapRef = useRef<any>(null);
 
   const [catches, setCatches] = useState<CatchPin[]>([]);
   const [loading, setLoading] = useState(true);
@@ -124,6 +210,7 @@ export default function MapScreen() {
   const [satellite, setSatellite] = useState(false);
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [openPanel, setOpenPanel] = useState<FilterPanel>(null);
+  const [mapBounds, setMapBounds] = useState({ lat: 12, lng: 20 });
 
   // ─── CSS Leaflet ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -139,12 +226,12 @@ export default function MapScreen() {
 
   // ─── Chargement ─────────────────────────────────────────────────────────────
   const loadCatches = useCallback(async () => {
-    if (!user?.id) return;
-    const userId = user.id;
+    const userId = user?.id ?? cachedUserId;
+    if (!userId) return;
     setLoading(true);
 
-    // Si hors-ligne : charger depuis le cache
-    if (isConnected === false) {
+    // Pas de session active ou hors-ligne → toujours utiliser le cache
+    if (!user?.id || isConnected === false) {
       const cached = await loadCatchesCache(userId);
       if (cached) {
         setCatches(cached.filter(
@@ -181,9 +268,9 @@ export default function MapScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id, isConnected]);
+  }, [user?.id, cachedUserId, isConnected]);
 
-  useFocusEffect(useCallback(() => { loadCatches(); }, [loadCatches]));
+  useFocusEffect(useCallback(() => { loadCatches().catch(console.warn); }, [loadCatches]));
 
   // ─── Listes dynamiques ──────────────────────────────────────────────────────
   const speciesList = useMemo(() => Array.from(new Set(catches.map((c) => c.species))).sort(), [catches]);
@@ -202,6 +289,15 @@ export default function MapScreen() {
   }, [catches, filters]);
 
   const activeCount = countActiveFilters(filters);
+
+  const clusters = useMemo(
+    () => clusterCatches(visibleCatches, mapBounds.lat, mapBounds.lng),
+    [visibleCatches, mapBounds],
+  );
+
+  const handleBoundsChange = useCallback((latDelta: number, lngDelta: number) => {
+    setMapBounds({ lat: latDelta, lng: lngDelta });
+  }, []);
 
   if (loading || !leafletReady) {
     return <View style={styles.center}><ActivityIndicator color={ACCENT} size="large" /></View>;
@@ -316,23 +412,49 @@ export default function MapScreen() {
         {MapContainer && (
           <MapContainer center={[47.5, -71.5]} zoom={6} style={{ width: '100%', height: '100%' }}>
             <TileLayer url={satellite ? TILES.satellite.url : TILES.standard.url} attribution={satellite ? TILES.satellite.attribution : TILES.standard.attribution} />
-            <MapFitter catches={visibleCatches} />
-            {visibleCatches.map((c) => (
-              <Marker key={c.id} position={[c.latitude, c.longitude]} icon={makeIcon(getColor(c.species))}>
-                <Popup>
-                  <div style={{ fontFamily: 'sans-serif', minWidth: 140 }}>
-                    <strong style={{ fontSize: 14 }}>{c.species}</strong>
-                    {c.lake_name && <div style={{ marginTop: 4, fontSize: 12 }}>📍 {c.lake_name}</div>}
-                    {c.lure && <div style={{ fontSize: 12 }}>🪝 {c.lure}</div>}
-                    {c.weight_lbs != null && <div style={{ fontSize: 12 }}>⚖️ {c.weight_lbs.toFixed(1)} lb</div>}
-                    <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>{formatDateFr(c.caught_at)}</div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: '#007AFF', fontWeight: 600, cursor: 'pointer' }} onClick={() => router.push(`/catch-detail?id=${c.id}`)}>
-                      Voir le détail →
-                    </div>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
+            <MapController catches={visibleCatches} onBoundsChange={handleBoundsChange} mapRef={leafletMapRef} />
+            {clusters.map((cluster) => {
+              const isCluster = cluster.catches.length > 1;
+              const singleCatch = cluster.catches[0];
+
+              if (!isCluster) {
+                return (
+                  <Marker key={cluster.id} position={[cluster.latitude, cluster.longitude]} icon={makeIcon(getColor(singleCatch.species))}>
+                    <Popup>
+                      <div style={{ fontFamily: 'sans-serif', minWidth: 140 }}>
+                        <strong style={{ fontSize: 14 }}>{singleCatch.species}</strong>
+                        {singleCatch.lake_name && <div style={{ marginTop: 4, fontSize: 12 }}>📍 {singleCatch.lake_name}</div>}
+                        {singleCatch.lure && <div style={{ fontSize: 12 }}>🪝 {singleCatch.lure}</div>}
+                        {singleCatch.weight_lbs != null && <div style={{ fontSize: 12 }}>⚖️ {singleCatch.weight_lbs.toFixed(1)} lb</div>}
+                        <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>{formatDateFr(singleCatch.caught_at)}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: '#007AFF', fontWeight: 600, cursor: 'pointer' }} onClick={() => router.push(`/catch-detail?id=${singleCatch.id}`)}>
+                          Voir le détail →
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              }
+
+              return (
+                <Marker
+                  key={cluster.id}
+                  position={[cluster.latitude, cluster.longitude]}
+                  icon={makeClusterIcon(cluster.speciesCounts, getColor)}
+                  eventHandlers={{
+                    click: () => {
+                      const lats = cluster.catches.map((o) => o.latitude);
+                      const lngs = cluster.catches.map((o) => o.longitude);
+                      const L = require('leaflet');
+                      leafletMapRef.current?.fitBounds(
+                        L.latLngBounds([[Math.min(...lats), Math.min(...lngs)], [Math.max(...lats), Math.max(...lngs)]]),
+                        { padding: [60, 60] },
+                      );
+                    },
+                  }}
+                />
+              );
+            })}
           </MapContainer>
         )}
       </div>

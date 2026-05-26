@@ -1,5 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '@/lib/supabase';
+import { uploadMediaFile } from '@/lib/uploadMedia';
 
 // ─── Clé de la file d'attente ─────────────────────────────────────────────────
 
@@ -47,6 +50,39 @@ export async function enqueueOfflineCatch(item: OfflineQueuedCatch): Promise<voi
   } catch (error) {
     console.warn("[Offline] Impossible d'enregistrer la prise hors-ligne", error);
   }
+}
+
+// ─── Persistance locale des médias (native uniquement) ───────────────────────
+
+const OFFLINE_MEDIA_DIR = (FileSystem.documentDirectory ?? '') + 'offline_media/';
+
+export async function persistMediaForOffline(
+  media: { uri: string; type: 'photo' | 'video' }[],
+): Promise<{ uri: string; type: 'photo' | 'video' }[]> {
+  if (Platform.OS === 'web' || media.length === 0) return [];
+
+  try {
+    const dirInfo = await FileSystem.getInfoAsync(OFFLINE_MEDIA_DIR);
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(OFFLINE_MEDIA_DIR, { intermediates: true });
+    }
+  } catch (e) {
+    console.warn('[Offline] Impossible de créer le dossier offline_media', e);
+    return [];
+  }
+
+  const persisted: { uri: string; type: 'photo' | 'video' }[] = [];
+  for (const item of media) {
+    try {
+      const ext = item.type === 'video' ? 'mp4' : 'jpg';
+      const destUri = `${OFFLINE_MEDIA_DIR}${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+      await FileSystem.copyAsync({ from: item.uri, to: destUri });
+      persisted.push({ uri: destUri, type: item.type });
+    } catch (e) {
+      console.warn('[Offline] Impossible de copier le media', item.uri, e);
+    }
+  }
+  return persisted;
 }
 
 export async function getOfflineQueueCount(): Promise<number> {
@@ -163,10 +199,49 @@ export async function trySyncOfflineCatches(userId: string): Promise<void> {
         // Retirer local_id avant l'insert
         const { local_id: _localId, ...insertPayload } = payload;
 
-        const { error } = await supabase.from('catches').insert(insertPayload);
+        const { data: insertedCatch, error } = await supabase
+          .from('catches')
+          .insert(insertPayload)
+          .select('id')
+          .single();
+
         if (error) {
           console.warn('[Offline] Erreur sync', error);
           remaining.push(item);
+          continue;
+        }
+
+        // Upload des médias persistés
+        if (insertedCatch && item.media && item.media.length > 0) {
+          for (const mediaItem of item.media) {
+            try {
+              let fileExists = true;
+              if (Platform.OS !== 'web') {
+                const info = await FileSystem.getInfoAsync(mediaItem.uri);
+                fileExists = info.exists;
+              }
+              if (!fileExists) continue;
+
+              const { storagePath } = await uploadMediaFile(
+                mediaItem.uri,
+                userId,
+                insertedCatch.id,
+                mediaItem.type,
+              );
+              await supabase.from('catch_media').insert({
+                catch_id: insertedCatch.id,
+                media_type: mediaItem.type,
+                storage_path: storagePath,
+                uploaded: true,
+              });
+
+              if (Platform.OS !== 'web') {
+                await FileSystem.deleteAsync(mediaItem.uri, { idempotent: true });
+              }
+            } catch (mediaErr) {
+              console.warn('[Offline] Erreur upload media', mediaErr);
+            }
+          }
         }
       } catch (err) {
         console.warn('[Offline] Erreur inattendue sync', err);

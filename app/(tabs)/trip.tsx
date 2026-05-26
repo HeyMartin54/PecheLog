@@ -13,9 +13,11 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import ConnectionBadge from '@/components/ConnectionBadge';
 import LurePicker from '@/components/LurePicker';
 import { useAuth } from '@/contexts/AuthContext';
 import { loadLuresWithCache, type UserLure } from '@/lib/lureStorage';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { enqueueOfflineCatch } from '@/lib/offlineSync';
 import { getSpeciesConfig, SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -28,6 +30,7 @@ import {
   loadTripHistory,
   saveLastCatchSettings,
   savePrefillTrip,
+  syncLocalTripsToSupabase,
 } from '@/lib/tripStorage';
 import { supabase } from '@/lib/supabase';
 
@@ -66,10 +69,12 @@ export default function TripScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const isConnected = useNetworkStatus();
 
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
   const [tripHistory, setTripHistory] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [quickState, setQuickState] = useState<QuickCatchState>('idle');
   const [ending, setEnding] = useState(false);
   const [quickSpecies, setQuickSpecies] = useState<string | null>(null);
@@ -83,22 +88,32 @@ export default function TripScreen() {
       let mounted = true;
       const refresh = async () => {
         setLoading(true);
-        const [active, history] = await Promise.all([loadActiveTrip(), loadTripHistory()]);
+        setHistoryLoading(true);
+
+        // Migrer les voyages locaux vers Supabase uniquement si connecté
+        if (isConnected === true) syncLocalTripsToSupabase();
+
+        const [active, history] = await Promise.all([
+          loadActiveTrip(),
+          loadTripHistory(),
+        ]);
+
         if (mounted) {
           setActiveTrip(active);
-          setTripHistory(history);
           setLoading(false);
           if (active) {
             const firstSpecies = active.lakes.flatMap((l) => l.targetSpecies)[0] ?? null;
             setQuickSpecies((prev) => prev ?? firstSpecies);
             setQuickLure((prev) => prev ?? active.luresSelected[0] ?? null);
           }
+          setTripHistory(history);
+          setHistoryLoading(false);
         }
       };
       refresh();
       if (user?.id) loadLuresWithCache(user.id).then(setUserLures);
       return () => { mounted = false; };
-    }, [user?.id]),
+    }, [user?.id, isConnected]),
   );
 
   const handleEndTrip = async () => {
@@ -243,7 +258,10 @@ export default function TripScreen() {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + 32 }]}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.pageTitle}>Voyage de pêche</Text>
+      <View style={styles.pageTitleRow}>
+        <Text style={styles.pageTitle}>Voyage de pêche</Text>
+        <ConnectionBadge />
+      </View>
 
       {activeTrip ? (
         <ActiveTripView
@@ -267,20 +285,6 @@ export default function TripScreen() {
             <Text style={styles.planButtonText}>Planifier un voyage</Text>
           </TouchableOpacity>
 
-          {tripHistory.length > 0 && (
-            <View style={{ marginTop: spacing.xl }}>
-              <Text style={styles.sectionLabel}>DERNIERS VOYAGES</Text>
-              {tripHistory.map((trip) => (
-                <TripHistoryCard
-                  key={trip.id}
-                  trip={trip}
-                  onRelaunch={() => handleRelaunch(trip)}
-                  onDelete={() => handleDeleteTrip(trip.id)}
-                />
-              ))}
-            </View>
-          )}
-
           {tripHistory.length === 0 && (
             <View style={styles.emptyState}>
               <Text style={styles.emptyEmoji}>🎣</Text>
@@ -292,6 +296,31 @@ export default function TripScreen() {
           )}
         </>
       )}
+
+      {/* Historique — toujours visible */}
+      <View style={styles.historySection}>
+        <View style={styles.historySectionHeader}>
+          <Ionicons name="time-outline" size={16} color={colors.accent} />
+          <Text style={styles.sectionLabel}>HISTORIQUE DES VOYAGES</Text>
+        </View>
+        {historyLoading ? (
+          <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.lg }} />
+        ) : tripHistory.length === 0 ? (
+          <View style={styles.historyEmptyBox}>
+            <Text style={styles.historyEmpty}>Aucun voyage terminé pour l'instant.</Text>
+            <Text style={styles.historyEmptySub}>Tes voyages passés apparaîtront ici.</Text>
+          </View>
+        ) : (
+          tripHistory.map((trip) => (
+            <TripHistoryCard
+              key={trip.id}
+              trip={trip}
+              onRelaunch={() => handleRelaunch(trip)}
+              onDelete={() => handleDeleteTrip(trip.id)}
+            />
+          ))
+        )}
+      </View>
     </ScrollView>
     <LurePicker
       visible={showLurePickerForQuick}
@@ -565,10 +594,15 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: spacing.lg,
   },
+  pageTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xl,
+  },
   pageTitle: {
     ...typography.h2,
     color: colors.textPrimary,
-    marginBottom: spacing.xl,
   },
 
   // Plan button
@@ -779,6 +813,36 @@ const styles = StyleSheet.create({
   },
 
   // History card
+  historySection: {
+    marginTop: spacing.xxl,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.xl,
+  },
+  historySectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  historyEmptyBox: {
+    alignItems: 'center',
+    paddingVertical: spacing.xl,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  historyEmpty: {
+    ...typography.body,
+    color: colors.textMuted,
+  },
+  historyEmptySub: {
+    ...typography.bodySmall,
+    color: colors.textSubtle,
+    marginTop: spacing.xs,
+  },
+
   historyCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
