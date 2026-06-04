@@ -442,6 +442,7 @@ export default function MapScreen() {
           const color1 = getColor(sorted[0][0]);
           const color2 = sorted.length > 1 ? getColor(sorted[1][0]) : color1;
           const multiSpecies = sorted.length > 1;
+          const label = total > 99 ? '99+' : String(total);
 
           return (
             <Marker
@@ -462,18 +463,20 @@ export default function MapScreen() {
                 }, 400);
               }}
             >
-              <View style={styles.clusterOuter}>
-                <View style={[
-                  styles.clusterLeft,
-                  { flex: cnt1, backgroundColor: color1 },
-                  !multiSpecies && styles.clusterRightRound,
-                ]} />
-                {multiSpecies && (
-                  <View style={[styles.clusterRight, { flex: cnt2, backgroundColor: color2 }]} />
-                )}
-                <View style={[StyleSheet.absoluteFill, styles.clusterOverlay]}>
-                  <Text style={[styles.clusterCount, total > 99 && { fontSize: 11 }]}>
-                    {total > 99 ? '99+' : total}
+              <View style={styles.clusterWrap}>
+                <View style={styles.clusterInner}>
+                  {multiSpecies ? (
+                    <>
+                      <View style={[styles.clusterSegL, { flex: cnt1, backgroundColor: color1 }]} />
+                      <View style={[styles.clusterSegR, { flex: cnt2, backgroundColor: color2 }]} />
+                    </>
+                  ) : (
+                    <View style={[styles.clusterSegFull, { backgroundColor: color1 }]} />
+                  )}
+                </View>
+                <View style={styles.clusterNumWrap}>
+                  <Text style={[styles.clusterNum, total > 99 ? { fontSize: 11 } : null]}>
+                    {label}
                   </Text>
                 </View>
               </View>
@@ -691,38 +694,48 @@ const styles = StyleSheet.create({
   calloutLink: { fontSize: 22, color: colors.accent, fontWeight: '700' },
 
   // ── Clusters ──
-  // Cercle blanc (44px) avec padding 3px → inner 38px.
-  // borderRadius 19 sur chaque segment = rayon exact de l'inner → coins parfaitement dans le cercle sans overflow:hidden
-  clusterOuter: {
+  clusterWrap: {
     width: 44,
     height: 44,
     borderRadius: 22,
     backgroundColor: '#fff',
     padding: 3,
-    flexDirection: 'row',
     elevation: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
   },
-  clusterLeft: {
+  clusterInner: {
+    width: 38,
+    height: 38,
+    flexDirection: 'row',
+  },
+  clusterSegFull: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+  },
+  clusterSegL: {
+    height: 38,
     borderTopLeftRadius: 19,
     borderBottomLeftRadius: 19,
   },
-  clusterRight: {
+  clusterSegR: {
+    height: 38,
     borderTopRightRadius: 19,
     borderBottomRightRadius: 19,
   },
-  clusterRightRound: {
-    borderTopRightRadius: 19,
-    borderBottomRightRadius: 19,
-  },
-  clusterOverlay: {
+  clusterNumWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  clusterCount: {
+  clusterNum: {
     fontSize: 14,
     fontWeight: '800',
     color: '#fff',
