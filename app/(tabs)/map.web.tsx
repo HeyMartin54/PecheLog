@@ -131,18 +131,24 @@ function makeClusterIcon(speciesCounts: Record<string, number>, getColor: (s: st
   const L = require('leaflet');
   const sorted = Object.entries(speciesCounts).sort((a, b) => b[1] - a[1]);
   const total = Object.values(speciesCounts).reduce((s, n) => s + n, 0);
-  const segments = sorted
-    .map(([sp, cnt]) => `<div style="flex:${cnt};background:${getColor(sp)};height:100%;"></div>`)
-    .join('');
+  const cnt1 = sorted[0][1];
+  const cnt2 = total - cnt1;
+  const color1 = getColor(sorted[0][0]);
+  const color2 = sorted.length > 1 ? getColor(sorted[1][0]) : color1;
+  const multi = sorted.length > 1;
+  const pct1 = Math.round(cnt1 / total * 100);
   const label = total > 99 ? '99+' : String(total);
   const fontSize = total > 99 ? 11 : 14;
-  const html = `<div style="width:46px;height:46px;border-radius:50%;background:#fff;position:relative;box-shadow:0 3px 8px rgba(0,0,0,0.35);">
-    <div style="position:absolute;top:4px;left:4px;width:38px;height:38px;border-radius:50%;overflow:hidden;display:flex;flex-direction:row;">${segments}</div>
+  const segments = multi
+    ? `<div style="flex:${pct1};background:${color1};border-radius:19px 0 0 19px;height:100%;"></div><div style="flex:${100 - pct1};background:${color2};border-radius:0 19px 19px 0;height:100%;"></div>`
+    : `<div style="flex:1;background:${color1};border-radius:19px;height:100%;"></div>`;
+  const html = `<div style="width:44px;height:44px;border-radius:22px;background:#fff;padding:3px;box-sizing:border-box;position:relative;box-shadow:0 2px 6px rgba(0,0,0,0.3);">
+    <div style="width:100%;height:100%;display:flex;flex-direction:row;overflow:hidden;border-radius:19px;">${segments}</div>
     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
-      <span style="font-size:${fontSize}px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.6);">${label}</span>
+      <span style="font-size:${fontSize}px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.7);">${label}</span>
     </div>
   </div>`;
-  return L.divIcon({ className: '', html, iconSize: [46, 46], iconAnchor: [23, 23] });
+  return L.divIcon({ className: '', html, iconSize: [44, 44], iconAnchor: [22, 22] });
 }
 
 function makeIcon(color: string) {

@@ -435,15 +435,19 @@ export default function MapScreen() {
             );
           }
 
-          const sortedSpecies = Object.entries(cluster.speciesCounts).sort((a, b) => b[1] - a[1]);
+          const sorted = Object.entries(cluster.speciesCounts).sort((a, b) => b[1] - a[1]);
           const total = cluster.catches.length;
+          const cnt1 = sorted[0][1];
+          const cnt2 = total - cnt1;
+          const color1 = getColor(sorted[0][0]);
+          const color2 = sorted.length > 1 ? getColor(sorted[1][0]) : color1;
+          const multiSpecies = sorted.length > 1;
 
           return (
             <Marker
               key={cluster.id}
               coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
               anchor={{ x: 0.5, y: 0.5 }}
-              tracksViewChanges={false}
               onPress={(e) => {
                 e.stopPropagation();
                 setSelectedCatch(null);
@@ -459,14 +463,19 @@ export default function MapScreen() {
               }}
             >
               <View style={styles.clusterOuter}>
-                <View style={styles.clusterInner}>
-                  {sortedSpecies.map(([species, cnt]) => (
-                    <View key={species} style={{ flex: cnt, backgroundColor: getColor(species) }} />
-                  ))}
+                <View style={[
+                  styles.clusterLeft,
+                  { flex: cnt1, backgroundColor: color1 },
+                  !multiSpecies && styles.clusterRightRound,
+                ]} />
+                {multiSpecies && (
+                  <View style={[styles.clusterRight, { flex: cnt2, backgroundColor: color2 }]} />
+                )}
+                <View style={[StyleSheet.absoluteFill, styles.clusterOverlay]}>
+                  <Text style={[styles.clusterCount, total > 99 && { fontSize: 11 }]}>
+                    {total > 99 ? '99+' : total}
+                  </Text>
                 </View>
-                <Text style={[styles.clusterCount, total > 99 && { fontSize: 11 }]}>
-                  {total > 99 ? '99+' : total}
-                </Text>
               </View>
             </Marker>
           );
@@ -682,34 +691,41 @@ const styles = StyleSheet.create({
   calloutLink: { fontSize: 22, color: colors.accent, fontWeight: '700' },
 
   // ── Clusters ──
+  // Cercle blanc (44px) avec padding 3px → inner 38px.
+  // borderRadius 19 sur chaque segment = rayon exact de l'inner → coins parfaitement dans le cercle sans overflow:hidden
   clusterOuter: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#fff',
+    padding: 3,
+    flexDirection: 'row',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  clusterLeft: {
+    borderTopLeftRadius: 19,
+    borderBottomLeftRadius: 19,
+  },
+  clusterRight: {
+    borderTopRightRadius: 19,
+    borderBottomRightRadius: 19,
+  },
+  clusterRightRound: {
+    borderTopRightRadius: 19,
+    borderBottomRightRadius: 19,
+  },
+  clusterOverlay: {
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 5,
-    elevation: 8,
-  },
-  clusterInner: {
-    position: 'absolute',
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    overflow: 'hidden',
-    flexDirection: 'row',
   },
   clusterCount: {
     fontSize: 14,
     fontWeight: '800',
     color: '#fff',
-    textShadowColor: 'rgba(0,0,0,0.6)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
   },
 
   // ── Barre de filtres ──
