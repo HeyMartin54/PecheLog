@@ -203,7 +203,7 @@ export default function MapScreen() {
         return;
       }
 
-      const valid = (data ?? []).filter(
+      const valid = ((data ?? []) as unknown as CatchPin[]).filter(
         (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
       );
       setCatches(valid);
@@ -423,7 +423,9 @@ export default function MapScreen() {
                 key={cluster.id}
                 coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
                 anchor={{ x: 0.5, y: 1 }}
-
+                // Android : sans ce flag, chaque marqueur à vue custom est re-capturé
+                // en continu → fuite mémoire / ANR / crash OOM en zoomant-dézoomant
+                tracksViewChanges={false}
                 onPress={(e) => { e.stopPropagation(); setSelectedCatch(singleCatch); setOpenPanel(null); }}
               >
                 <View style={styles.pinContainer}>
@@ -449,6 +451,7 @@ export default function MapScreen() {
               key={cluster.id}
               coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
               anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
               onPress={(e) => {
                 e.stopPropagation();
                 setSelectedCatch(null);

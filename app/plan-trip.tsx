@@ -25,6 +25,8 @@ import {
   type UserLure,
 } from '@/lib/lureStorage';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
+import { getPositionSafe } from '@/lib/locationSafe';
+import { fetchWithTimeout, isOnline } from '@/lib/net';
 import { SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { useAuth } from '@/contexts/AuthContext';
@@ -109,11 +111,13 @@ export default function PlanTripScreen() {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') { setLocationLoading(false); return; }
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      // Try reverse geocoding for a lake name
+      const loc = await getPositionSafe();
+      if (!loc) { setLocationLoading(false); return; }
+      // Try reverse geocoding for a lake name (seulement si en ligne)
       try {
+        if (!(await isOnline())) { setLocationLoading(false); return; }
         const url = `https://nominatim.openstreetmap.org/reverse?lat=${loc.coords.latitude}&lon=${loc.coords.longitude}&format=json&zoom=14`;
-        const res = await fetch(url, { headers: { 'User-Agent': 'PecheLog/1.0' } });
+        const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'PecheLog/1.0' } }, 8000);
         if (res.ok) {
           const data = await res.json();
           const name = data?.address?.water || data?.address?.lake || data?.address?.reservoir || null;

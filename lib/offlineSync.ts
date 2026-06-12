@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '@/lib/supabase';
+import { fetchWithTimeout, isOnline } from '@/lib/net';
 import { uploadMediaFile } from '@/lib/uploadMedia';
 
 // ─── Clé de la file d'attente ─────────────────────────────────────────────────
@@ -130,7 +131,7 @@ async function fetchWeatherAtTime(
         ? `https://api.open-meteo.com/v1/forecast?${coords}&past_days=${Math.min(daysDiff + 1, 16)}&forecast_days=1&${params}`
         : `https://archive-api.open-meteo.com/v1/archive?${coords}&start_date=${dateStr}&end_date=${dateStr}&${params}`;
 
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) return null;
 
     const data = await res.json();
@@ -158,13 +159,23 @@ async function fetchWeatherAtTime(
 
 // ─── Synchronisation ─────────────────────────────────────────────────────────
 
+// Verrou anti-doublons : SyncManager (retour réseau) et log-catch (montage)
+// peuvent appeler trySyncOfflineCatches en même temps. Sans verrou, la même
+// prise en file serait insérée deux fois dans Supabase.
+let syncInProgress = false;
+
 export async function trySyncOfflineCatches(userId: string): Promise<void> {
+  if (syncInProgress) return;
+  syncInProgress = true;
   try {
     const existing = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
     if (!existing) return;
 
     const queue: OfflineQueuedCatch[] = JSON.parse(existing);
     if (!Array.isArray(queue) || queue.length === 0) return;
+
+    // Hors-ligne → inutile de tenter (et ça peut bloquer longtemps sur Android)
+    if (!(await isOnline())) return;
 
     const remaining: OfflineQueuedCatch[] = [];
 
@@ -199,11 +210,24 @@ export async function trySyncOfflineCatches(userId: string): Promise<void> {
         // Retirer local_id avant l'insert
         const { local_id: _localId, ...insertPayload } = payload;
 
-        const { data: insertedCatch, error } = await supabase
-          .from('catches')
-          .insert(insertPayload)
-          .select('id')
-          .single();
+        // Timeout avec annulation réelle : si la requête est abandonnée,
+        // elle n'atteint pas le serveur (pas de risque de doublon).
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 20000);
+        let insertedCatch: { id: string } | null = null;
+        let error: unknown = null;
+        try {
+          const res = await supabase
+            .from('catches')
+            .insert(insertPayload)
+            .select('id')
+            .abortSignal(controller.signal)
+            .single();
+          insertedCatch = res.data;
+          error = res.error;
+        } finally {
+          clearTimeout(timer);
+        }
 
         if (error) {
           console.warn('[Offline] Erreur sync', error);
@@ -258,5 +282,7 @@ export async function trySyncOfflineCatches(userId: string): Promise<void> {
     console.log(`[Offline] Sync terminée — ${queue.length - remaining.length} prises envoyées, ${remaining.length} restantes`);
   } catch (error) {
     console.warn('[Offline] Impossible de synchroniser', error);
+  } finally {
+    syncInProgress = false;
   }
 }

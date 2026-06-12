@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     backgroundColor: colors.errorSubtle,
     borderWidth: 1,
-    borderColor: colors.errorBorder ?? 'rgba(255,94,94,0.25)',
+    borderColor: 'rgba(255,94,94,0.25)',
   },
   logoutButtonDisabled: {
     opacity: 0.65,

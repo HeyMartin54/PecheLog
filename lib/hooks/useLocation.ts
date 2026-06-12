@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import * as Location from 'expo-location';
 
+import { getPositionSafe } from '@/lib/locationSafe';
+import { fetchWithTimeout, isOnline } from '@/lib/net';
+
 type UseLocationResult = {
   coords: Location.LocationObject | null;
   lakeName: string | null;
@@ -38,22 +41,27 @@ export function useLocation(): UseLocationResult {
           return;
         }
 
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
+        const loc = await getPositionSafe();
         if (!isMounted) return;
+        if (!loc) {
+          setError('Impossible de récupérer la position actuelle');
+          return;
+        }
 
         setCoords(loc);
 
         const speed = typeof loc.coords.speed === 'number' ? loc.coords.speed : null;
         setSpeedKmh(speed != null ? speed * 3.6 : null);
 
-        const lake = await reverseGeocodeLakeName(
-          loc.coords.latitude,
-          loc.coords.longitude,
-        );
-        if (!isMounted) return;
-        setLakeName(lake);
+        // Geocoding seulement si en ligne (Nominatim nécessite internet)
+        if (await isOnline()) {
+          const lake = await reverseGeocodeLakeName(
+            loc.coords.latitude,
+            loc.coords.longitude,
+          );
+          if (!isMounted) return;
+          setLakeName(lake);
+        }
       } catch (err) {
         console.warn('[useLocation] Erreur lors de la récupération de la position', err);
         if (isMounted) {
@@ -89,11 +97,11 @@ async function reverseGeocodeLakeName(
 ): Promise<string | null> {
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&zoom=14`;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       headers: {
         'User-Agent': 'PecheLog/1.0',
       },
-    });
+    }, 8000);
     if (!res.ok) return null;
     const data = await res.json();
     const lake =

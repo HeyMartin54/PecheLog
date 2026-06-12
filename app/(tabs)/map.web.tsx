@@ -267,7 +267,7 @@ export default function MapScreen() {
         }
         return;
       }
-      setCatches((data ?? []).filter(
+      setCatches(((data ?? []) as unknown as CatchPin[]).filter(
         (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
       ));
       await saveCatchesCache(userId, data as never);

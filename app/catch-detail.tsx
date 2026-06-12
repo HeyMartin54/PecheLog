@@ -16,11 +16,13 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 
 import LocationPickerMap from '@/components/LocationPickerMap';
 import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
+import { fetchWithTimeout } from '@/lib/net';
 import { supabase } from '@/lib/supabase';
 import { uploadMediaFile } from '@/lib/uploadMedia';
 import { loadCatchesCache } from '@/lib/catchCache';
@@ -80,8 +82,10 @@ async function fetchWeatherFromOpenWeather(lat: number, lon: number): Promise<We
   const apiKey = process.env.EXPO_PUBLIC_OPENWEATHER_API_KEY;
   if (!apiKey) return null;
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${apiKey}`,
+      {},
+      8000,
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -116,7 +120,7 @@ async function fetchWeatherForDatetime(lat: number, lon: number, datetime: Date)
       ? `https://api.open-meteo.com/v1/forecast?past_days=${Math.ceil(diffDays)}&forecast_days=1`
       : `https://archive-api.open-meteo.com/v1/archive?start_date=${dateStr}&end_date=${dateStr}`;
     const url = `${baseUrl}&latitude=${lat}&longitude=${lon}&hourly=temperature_2m,windspeed_10m,winddirection_10m,cloudcover&timezone=auto`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
     const data = await res.json();
     const times: string[] = data.hourly?.time ?? [];

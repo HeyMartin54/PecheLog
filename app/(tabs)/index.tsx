@@ -218,8 +218,8 @@ export default function HomeScreen() {
         return;
       }
 
-      const list = rows ?? [];
-      applyList(list as CatchRow[]);
+      const list = (rows ?? []) as unknown as CatchRow[];
+      applyList(list);
       // Sauvegarder dans le cache pour la prochaine utilisation hors-ligne
       await saveCatchesCache(effectiveUserId, list as never);
     } finally {

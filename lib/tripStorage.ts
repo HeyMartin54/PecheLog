@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isOnline, withTimeout } from '@/lib/net';
 import { supabase } from '@/lib/supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -77,14 +78,19 @@ export async function saveActiveTrip(trip: Trip): Promise<void> {
   // Cache local immédiat (UI réactive)
   await AsyncStorage.setItem(ACTIVE_TRIP_KEY, JSON.stringify(trip));
 
-  // Sync Supabase
+  // Sync Supabase — seulement si en ligne (sinon syncLocalTripsToSupabase s'en chargera)
   try {
+    if (!(await isOnline())) return;
     const userId = await getCurrentUserId();
     if (!userId) {
       console.warn('[TripStorage] saveActiveTrip: pas de session, voyage non envoyé à Supabase');
       return;
     }
-    const { error } = await supabase.from('trips').upsert(tripToRow(trip, userId));
+    const { error } = await withTimeout(
+      supabase.from('trips').upsert(tripToRow(trip, userId)),
+      10000,
+      'saveActiveTrip',
+    );
     if (error) console.warn('[TripStorage] saveActiveTrip upsert error:', error.message);
   } catch (e) {
     console.warn('[TripStorage] saveActiveTrip sync error:', e);
@@ -92,18 +98,23 @@ export async function saveActiveTrip(trip: Trip): Promise<void> {
 }
 
 export async function loadActiveTrip(): Promise<Trip | null> {
-  // Supabase en priorité — filtre explicite par user_id + RLS
+  // Supabase en priorité — filtre explicite par user_id + RLS.
+  // Hors-ligne, on saute directement au cache local (rapide, pas de blocage).
   try {
     const userId = await getCurrentUserId();
-    if (userId) {
-      const { data, error } = await supabase
-        .from('trips')
-        .select('*')
-        .eq('user_id', userId)
-        .is('ended_at', null)
-        .order('started_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    if (userId && (await isOnline())) {
+      const { data, error } = await withTimeout(
+        supabase
+          .from('trips')
+          .select('*')
+          .eq('user_id', userId)
+          .is('ended_at', null)
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        10000,
+        'loadActiveTrip',
+      );
 
       if (error) {
         console.warn('[TripStorage] loadActiveTrip error:', error.message);
@@ -112,8 +123,26 @@ export async function loadActiveTrip(): Promise<Trip | null> {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, JSON.stringify(trip));
         return trip;
       } else {
-        // Aucun voyage actif sur Supabase → nettoyer le cache local
-        await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+        // Aucun voyage actif sur Supabase. ATTENTION : un voyage créé
+        // hors-ligne n'existe pas encore côté serveur — ne pas le supprimer !
+        const raw = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+        if (raw) {
+          const localTrip: Trip = JSON.parse(raw);
+          const { data: remote } = await withTimeout(
+            supabase.from('trips').select('id, ended_at').eq('id', localTrip.id).maybeSingle(),
+            10000,
+            'loadActiveTrip remote check',
+          );
+          if (remote) {
+            // Le voyage existe côté serveur (terminé sur un autre appareil) → respecter le serveur
+            await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+            return null;
+          }
+          // Créé hors-ligne, jamais envoyé → le pousser au lieu de le perdre
+          const { error: upErr } = await supabase.from('trips').upsert(tripToRow(localTrip, userId));
+          if (upErr) console.warn('[TripStorage] loadActiveTrip upsert local trip error:', upErr.message);
+          return localTrip;
+        }
         return null;
       }
     }
@@ -142,15 +171,21 @@ export async function endActiveTrip(): Promise<void> {
   await AsyncStorage.setItem(TRIP_HISTORY_KEY, JSON.stringify(history));
   await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
 
-  // Sync Supabase
+  // Sync Supabase — si hors-ligne, syncLocalTripsToSupabase poussera le
+  // ended_at de l'historique local au retour du signal.
   try {
+    if (!(await isOnline())) return;
     const userId = await getCurrentUserId();
     if (!userId) return;
-    const { error } = await supabase
-      .from('trips')
-      .update({ ended_at: endedAt, updated_at: new Date().toISOString() })
-      .eq('id', trip.id)
-      .eq('user_id', userId);
+    const { error } = await withTimeout(
+      supabase
+        .from('trips')
+        .update({ ended_at: endedAt, updated_at: new Date().toISOString() })
+        .eq('id', trip.id)
+        .eq('user_id', userId),
+      10000,
+      'endActiveTrip',
+    );
     if (error) console.warn('[TripStorage] endActiveTrip error:', error.message);
   } catch (e) {
     console.warn('[TripStorage] endActiveTrip sync error:', e);
@@ -160,24 +195,38 @@ export async function endActiveTrip(): Promise<void> {
 // ─── Historique ───────────────────────────────────────────────────────────────
 
 export async function loadTripHistory(): Promise<Trip[]> {
-  // Supabase en priorité — filtre explicite par user_id + RLS
+  // Supabase en priorité — filtre explicite par user_id + RLS.
+  // Hors-ligne, on saute directement au cache local.
   try {
     const userId = await getCurrentUserId();
-    if (userId) {
-      const { data, error } = await supabase
-        .from('trips')
-        .select('*')
-        .eq('user_id', userId)
-        .not('ended_at', 'is', null)
-        .order('started_at', { ascending: false })
-        .limit(HISTORY_MAX);
+    if (userId && (await isOnline())) {
+      const { data, error } = await withTimeout(
+        supabase
+          .from('trips')
+          .select('*')
+          .eq('user_id', userId)
+          .not('ended_at', 'is', null)
+          .order('started_at', { ascending: false })
+          .limit(HISTORY_MAX),
+        10000,
+        'loadTripHistory',
+      );
 
       if (error) {
         console.warn('[TripStorage] loadTripHistory error:', error.message);
       } else if (data) {
         const trips = data.map((row) => rowToTrip(row as Record<string, unknown>));
-        await AsyncStorage.setItem(TRIP_HISTORY_KEY, JSON.stringify(trips));
-        return trips;
+        // Préserver les voyages terminés hors-ligne pas encore migrés vers
+        // Supabase — sinon ils disparaîtraient du cache au retour du signal.
+        const raw = await AsyncStorage.getItem(TRIP_HISTORY_KEY);
+        const local: Trip[] = raw ? JSON.parse(raw) : [];
+        const remoteIds = new Set(trips.map((t) => t.id));
+        const localOnly = local.filter((t) => !remoteIds.has(t.id));
+        const merged = [...localOnly, ...trips]
+          .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+          .slice(0, HISTORY_MAX);
+        await AsyncStorage.setItem(TRIP_HISTORY_KEY, JSON.stringify(merged));
+        return merged;
       }
     }
   } catch (e) {
@@ -218,6 +267,7 @@ export async function deleteTripFromHistory(tripId: string): Promise<void> {
 
 export async function syncLocalTripsToSupabase(): Promise<void> {
   try {
+    if (!(await isOnline())) return;
     const userId = await getCurrentUserId();
     if (!userId) return;
 
@@ -243,22 +293,14 @@ export async function syncLocalTripsToSupabase(): Promise<void> {
     const localHistory: Trip[] = JSON.parse(histRaw);
     if (localHistory.length === 0) return;
 
-    // Récupère les IDs déjà dans Supabase pour éviter les doublons
-    const { data: existing } = await supabase
-      .from('trips')
-      .select('id')
-      .eq('user_id', userId)
-      .in('id', localHistory.map((t) => t.id));
-
-    const existingIds = new Set((existing ?? []).map((r: { id: string }) => r.id));
-    const toUpload = localHistory.filter((t) => !existingIds.has(t.id));
-
-    if (toUpload.length === 0) return;
-
-    const rows = toUpload.map((t) => tripToRow(t, userId));
+    // Upsert TOUS les voyages de l'historique local (pas seulement les
+    // manquants) : un voyage terminé hors-ligne existe déjà côté serveur
+    // mais sans ended_at — l'upsert pousse le ended_at local et évite
+    // qu'il ressuscite comme voyage actif au retour du signal.
+    const rows = localHistory.map((t) => tripToRow(t, userId));
     const { error } = await supabase.from('trips').upsert(rows);
     if (error) console.warn('[TripStorage] syncLocal history error:', error.message);
-    else console.log(`[TripStorage] ${toUpload.length} voyage(s) local(aux) migrés vers Supabase`);
+    else console.log(`[TripStorage] ${localHistory.length} voyage(s) local(aux) synchronisés vers Supabase`);
   } catch (e) {
     console.warn('[TripStorage] syncLocalTripsToSupabase error:', e);
   }

@@ -31,6 +31,8 @@ import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
+import { getPositionSafe } from '@/lib/locationSafe';
+import { fetchWithTimeout, isOnline } from '@/lib/net';
 import { supabase } from '@/lib/supabase';
 import { enqueueOfflineCatch, trySyncOfflineCatches, persistMediaForOffline } from '@/lib/offlineSync';
 import { uploadMediaFile } from '@/lib/uploadMedia';
@@ -260,7 +262,7 @@ async function fetchWeatherForDatetime(
       `${baseUrl}&latitude=${latitude}&longitude=${longitude}` +
       `&hourly=temperature_2m,windspeed_10m,winddirection_10m,cloudcover&timezone=auto`;
 
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
 
     const data = await res.json();
@@ -297,7 +299,7 @@ async function fetchWeatherFromOpenWeather(
 
   try {
     const url = `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&units=metric&appid=${apiKey}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) {
       console.warn('[Weather] Réponse non OK', res.status);
       return null;
@@ -332,7 +334,7 @@ function fmtTime(d: Date): string {
 
 export default function LogCatchScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
   const insets = useSafeAreaInsets();
   const { activeSpecies } = useActiveSpecies();
   const { prefillSpecies, prefillLure, returnTo } = useLocalSearchParams<{
@@ -407,10 +409,14 @@ export default function LogCatchScreen() {
     let isMounted = true;
 
     const init = async () => {
-      if (!user?.id) return;
-      await trySyncOfflineCatches(user.id);
-      const trip = await loadActiveTrip();
-      if (isMounted) setActiveTrip(trip);
+      // Sync hors-ligne et voyage actif en arrière-plan : ils ne doivent
+      // JAMAIS bloquer la capture GPS (le pêcheur a un poisson dans les mains).
+      if (user?.id) {
+        trySyncOfflineCatches(user.id).catch(() => {});
+      }
+      loadActiveTrip()
+        .then((trip) => { if (isMounted) setActiveTrip(trip); })
+        .catch(() => {});
 
       try {
         setAutoLoading(true);
@@ -420,10 +426,12 @@ export default function LogCatchScreen() {
           return;
         }
 
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
+        const loc = await getPositionSafe();
         if (!isMounted) return;
+        if (!loc) {
+          console.warn('[Location] Aucune position disponible');
+          return;
+        }
 
         setCoords(loc);
 
@@ -435,11 +443,15 @@ export default function LogCatchScreen() {
           setSpeedInput((prev) => (prev === '' ? computedSpeed.toFixed(1) : prev));
         }
 
+        // Hors-ligne : on saute la météo/geocoding (la sync les complétera plus tard)
+        const online = await isOnline();
         const [lake, weather] = await Promise.all([
-          LAKE_NAME_FEATURE
+          LAKE_NAME_FEATURE && online
             ? reverseGeocodeLakeName(loc.coords.latitude, loc.coords.longitude)
             : Promise.resolve(null),
-          fetchWeatherFromOpenWeather(loc.coords.latitude, loc.coords.longitude),
+          online
+            ? fetchWeatherFromOpenWeather(loc.coords.latitude, loc.coords.longitude)
+            : Promise.resolve(null),
         ]);
 
         if (!isMounted) return;
@@ -629,7 +641,9 @@ export default function LogCatchScreen() {
   };
 
   const handleSave = async () => {
-    const effectiveUserId = user?.id;
+    // Hors-ligne sans session active : cachedUserId permet de mettre la prise
+    // en file d'attente — elle sera envoyée quand la session sera restaurée.
+    const effectiveUserId = user?.id ?? cachedUserId;
     if (!effectiveUserId) {
       Alert.alert('Erreur', 'Tu dois être connecté pour enregistrer une prise.');
       return;
@@ -685,11 +699,41 @@ export default function LogCatchScreen() {
 
     setSaving(true);
     try {
-      const { data: insertedCatch, error } = await supabase
-        .from('catches')
-        .insert(buildCatchInsertPayload(payload))
-        .select('id')
-        .single();
+      // Hors-ligne (ou session absente) → file d'attente directement, sans
+      // attendre un échec réseau qui peut prendre des minutes sur Android.
+      const online = await isOnline();
+      if (!online || !user?.id) {
+        const persistedMedia = await persistMediaForOffline(media);
+        await enqueueOfflineCatch({ payload, media: persistedMedia });
+        await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
+        Alert.alert(
+          'Mode hors-ligne',
+          'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
+        );
+        navigateAfterSave();
+        return;
+      }
+
+      // En ligne : insert avec annulation réelle après 20 s (signal faible →
+      // la requête est abandonnée et la prise bascule en file hors-ligne).
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      let insertedCatch: { id: string } | null = null;
+      let error: unknown = null;
+      try {
+        const res = await supabase
+          .from('catches')
+          .insert(buildCatchInsertPayload(payload))
+          .select('id')
+          .abortSignal(controller.signal)
+          .single();
+        insertedCatch = res.data;
+        error = res.error;
+      } catch (e) {
+        error = e;
+      } finally {
+        clearTimeout(timer);
+      }
 
       if (error) {
         console.warn(`[LogCatch] Erreur lors de l'enregistrement en ligne, on bascule hors-ligne`, error);

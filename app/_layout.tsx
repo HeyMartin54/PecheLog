@@ -64,8 +64,10 @@ function SyncManager() {
   const prevConnected = useRef<boolean | null>(null);
 
   useEffect(() => {
-    // Transition offline → online : on synchronise
-    if (isConnected === true && prevConnected.current === false && user?.id) {
+    // Toute transition vers "en ligne" déclenche la sync :
+    //  - null → true  : démarrage de l'app avec connexion (file restée d'une session précédente)
+    //  - false → true : retour du signal
+    if (isConnected === true && prevConnected.current !== true && user?.id) {
       trySyncOfflineCatches(user.id);
     }
     prevConnected.current = isConnected;

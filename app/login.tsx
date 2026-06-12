@@ -12,12 +12,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { session, initializing, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
+  const { session, initializing, cachedUserId, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
+  const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(false);
@@ -27,10 +29,17 @@ export default function LoginScreen() {
   const DEV_PASSWORD = 'TestPeche2024!';
 
   useEffect(() => {
-    if (!initializing && session) {
+    if (initializing) return;
+    if (session) {
+      router.replace('/(tabs)');
+      return;
+    }
+    // Hors-ligne sans session (token expiré, refresh impossible) mais utilisateur
+    // déjà connu → accès à l'app en mode hors-ligne (cache + file d'attente).
+    if (isConnected === false && cachedUserId) {
       router.replace('/(tabs)');
     }
-  }, [initializing, session]);
+  }, [initializing, session, isConnected, cachedUserId]);
 
   const handleGoogleLogin = async () => {
     if (loading) return;

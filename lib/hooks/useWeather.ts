@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { fetchWithTimeout } from '@/lib/net';
+
 type UseWeatherResult = {
   temperatureC: number | null;
   windKmh: number | null;
@@ -81,7 +83,7 @@ async function fetchWeatherFromOpenWeather(
 
   try {
     const url = `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&units=metric&appid=${apiKey}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) {
       console.warn('[useWeather] Réponse météo non OK', res.status);
       return null;

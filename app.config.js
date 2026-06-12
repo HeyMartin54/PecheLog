@@ -1,6 +1,20 @@
 // app.config.js — remplace app.json pour permettre l'interpolation des variables d'environnement
 const IS_DEV = process.env.APP_VARIANT === 'development';
 
+// Sans cette clé, le manifest Android n'a pas de com.google.android.geo.API_KEY
+// et l'app CRASH nativement dès l'ouverture de l'écran Carte.
+// .env est gitignoré → il n'est PAS envoyé aux serveurs EAS : la clé doit être
+// fournie via les variables d'environnement EAS (eas env:create) ou eas.json.
+if (!process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY) {
+  const msg =
+    '[app.config.js] EXPO_PUBLIC_GOOGLE_MAPS_KEY manquante — la carte Android va crasher. ' +
+    'Définis-la dans .env (local) ou via `eas env:create` (builds EAS).';
+  if (process.env.EAS_BUILD === 'true') {
+    throw new Error(msg); // mieux vaut un build qui échoue qu'un APK qui crash
+  }
+  console.warn(msg);
+}
+
 module.exports = {
   expo: {
     name: IS_DEV ? 'PecheLog (dev)' : 'PecheLog',
