@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import { useSettings } from '@/contexts/SettingsContext';
 import type { UserLure } from '@/lib/lureStorage';
 
 type LureFormData = {
@@ -40,6 +41,7 @@ type Props = {
 
 export default function LureFormModal({ visible, lure, onSave, onDelete, onClose }: Props) {
   const insets = useSafeAreaInsets();
+  const { t } = useSettings();
   const isEditing = !!lure;
 
   const [form, setForm] = useState<LureFormData>({ name: '', size: '', color: '', notes: '' });
@@ -60,7 +62,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
   const handleSave = () => {
     const name = form.name.trim();
     if (!name) {
-      Alert.alert('Nom requis', 'Le leurre doit avoir un nom.');
+      Alert.alert(t('lureForm.nameRequired'), t('lureForm.nameRequiredBody'));
       return;
     }
     onSave({
@@ -74,11 +76,11 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
 
   const handleDelete = () => {
     Alert.alert(
-      'Supprimer ce leurre',
-      `Supprimer "${lure?.name}" ? Cette action est irréversible.`,
+      t('lureForm.delete'),
+      t('lureForm.deleteConfirm', { name: lure?.name ?? '' }),
       [
-        { text: 'Annuler', style: 'cancel' },
-        { text: 'Supprimer', style: 'destructive', onPress: onDelete },
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('common.delete'), style: 'destructive', onPress: onDelete },
       ],
     );
   };
@@ -95,7 +97,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
     if (useCamera) {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission refusée', 'Autorisez l\'accès à la caméra dans les réglages.');
+        Alert.alert(t('detail.permDenied'), t('detail.cameraPerm'));
         return;
       }
       result = await ImagePicker.launchCameraAsync(options);
@@ -113,27 +115,27 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
       pickPhoto(false);
       return;
     }
-    Alert.alert('Photo du leurre', 'Choisir une source', [
-      { text: 'Prendre une photo', onPress: () => pickPhoto(true) },
-      { text: 'Choisir dans la bibliothèque', onPress: () => pickPhoto(false) },
-      { text: 'Annuler', style: 'cancel' },
+    Alert.alert(t('lureForm.photoTitle'), t('detail.chooseSource'), [
+      { text: t('detail.takePhoto'), onPress: () => pickPhoto(true) },
+      { text: t('detail.fromLibrary'), onPress: () => pickPhoto(false) },
+      { text: t('common.cancel'), style: 'cancel' },
     ]);
   };
 
   const handleChangePhoto = () => {
     if (Platform.OS === 'web') {
-      Alert.alert('Photo du leurre', 'Modifier la photo', [
-        { text: 'Changer', onPress: () => pickPhoto(false) },
-        { text: 'Supprimer', style: 'destructive', onPress: () => setLocalPhotoUri(null) },
-        { text: 'Annuler', style: 'cancel' },
+      Alert.alert(t('lureForm.photoTitle'), t('lureForm.editPhoto'), [
+        { text: t('lureForm.change'), onPress: () => pickPhoto(false) },
+        { text: t('common.delete'), style: 'destructive', onPress: () => setLocalPhotoUri(null) },
+        { text: t('common.cancel'), style: 'cancel' },
       ]);
       return;
     }
-    Alert.alert('Photo du leurre', 'Modifier la photo', [
-      { text: 'Prendre une photo', onPress: () => pickPhoto(true) },
-      { text: 'Choisir dans la bibliothèque', onPress: () => pickPhoto(false) },
-      { text: 'Supprimer la photo', style: 'destructive', onPress: () => setLocalPhotoUri(null) },
-      { text: 'Annuler', style: 'cancel' },
+    Alert.alert(t('lureForm.photoTitle'), t('lureForm.editPhoto'), [
+      { text: t('detail.takePhoto'), onPress: () => pickPhoto(true) },
+      { text: t('detail.fromLibrary'), onPress: () => pickPhoto(false) },
+      { text: t('lureForm.deletePhoto'), style: 'destructive', onPress: () => setLocalPhotoUri(null) },
+      { text: t('common.cancel'), style: 'cancel' },
     ]);
   };
 
@@ -151,11 +153,11 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
         {/* Header */}
         <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={styles.cancelText}>Annuler</Text>
+            <Text style={styles.cancelText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>{isEditing ? 'Modifier le leurre' : 'Nouveau leurre'}</Text>
           <TouchableOpacity onPress={handleSave} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={styles.saveText}>Sauvegarder</Text>
+            <Text style={styles.saveText}>{t('detail.save')}</Text>
           </TouchableOpacity>
         </View>
 
@@ -166,10 +168,10 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
         >
           {/* Nom */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Nom *</Text>
+            <Text style={styles.fieldLabel}>{t('lureForm.name')}</Text>
             <TextInput
               style={styles.input}
-              placeholder="Ex: Aglia #2, Rapala Original…"
+              placeholder={t('lureForm.namePlaceholder')}
               placeholderTextColor={colors.textMuted}
               value={form.name}
               onChangeText={(v) => setForm((p) => ({ ...p, name: v }))}
@@ -180,10 +182,10 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
 
           {/* Grosseur */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Grosseur</Text>
+            <Text style={styles.fieldLabel}>{t('lureForm.size')}</Text>
             <TextInput
               style={styles.input}
-              placeholder="Ex: 7 cm, 3/8 oz, #3…"
+              placeholder={t('lureForm.sizePlaceholder')}
               placeholderTextColor={colors.textMuted}
               value={form.size}
               onChangeText={(v) => setForm((p) => ({ ...p, size: v }))}
@@ -193,10 +195,10 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
 
           {/* Couleur */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Couleur</Text>
+            <Text style={styles.fieldLabel}>{t('lureForm.color')}</Text>
             <TextInput
               style={styles.input}
-              placeholder="Ex: Perch, Chrome, Fire Tiger…"
+              placeholder={t('lureForm.colorPlaceholder')}
               placeholderTextColor={colors.textMuted}
               value={form.color}
               onChangeText={(v) => setForm((p) => ({ ...p, color: v }))}
@@ -206,26 +208,26 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
 
           {/* Photo */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Photo</Text>
+            <Text style={styles.fieldLabel}>{t('lureForm.photo')}</Text>
             {localPhotoUri ? (
               <TouchableOpacity onPress={handleChangePhoto} activeOpacity={0.85}>
                 <Image source={{ uri: localPhotoUri }} style={styles.photoPreview} resizeMode="cover" />
-                <Text style={styles.photoChangeHint}>Appuyer pour modifier</Text>
+                <Text style={styles.photoChangeHint}>{t('lureForm.tapToEdit')}</Text>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity style={styles.photoAddBtn} onPress={handleAddPhoto} activeOpacity={0.8}>
                 <Text style={styles.photoAddIcon}>📷</Text>
-                <Text style={styles.photoAddText}>Ajouter une photo</Text>
+                <Text style={styles.photoAddText}>{t('lureForm.addPhoto')}</Text>
               </TouchableOpacity>
             )}
           </View>
 
           {/* Autres infos */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Autres informations</Text>
+            <Text style={styles.fieldLabel}>{t('lureForm.other')}</Text>
             <TextInput
               style={[styles.input, styles.notesInput]}
-              placeholder="Notes additionnelles…"
+              placeholder={t('lureForm.notesPlaceholder')}
               placeholderTextColor={colors.textMuted}
               value={form.notes}
               onChangeText={(v) => setForm((p) => ({ ...p, notes: v }))}
@@ -238,7 +240,7 @@ export default function LureFormModal({ visible, lure, onSave, onDelete, onClose
           {/* Supprimer (mode édition seulement) */}
           {isEditing && onDelete && (
             <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete} activeOpacity={0.8}>
-              <Text style={styles.deleteBtnText}>Supprimer ce leurre</Text>
+              <Text style={styles.deleteBtnText}>{t('lureForm.delete')}</Text>
             </TouchableOpacity>
           )}
         </ScrollView>

@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { colors } from '@/lib/theme';
 
@@ -37,6 +38,7 @@ const tabIconStyles = StyleSheet.create({
 export default function TabLayout() {
   const router = useRouter();
   const { session, initializing, cachedUserId } = useAuth();
+  const { t } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
@@ -78,7 +80,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Accueil',
+          title: t('tabs.home'),
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="home" color={color} focused={focused} />
           ),
@@ -91,7 +93,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="map"
         options={{
-          title: 'Carte',
+          title: t('tabs.map'),
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="map" color={color} focused={focused} />
           ),
@@ -100,7 +102,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="stats"
         options={{
-          title: 'Stats',
+          title: t('tabs.stats'),
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="bar-chart" color={color} focused={focused} />
           ),
@@ -109,7 +111,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="trip"
         options={{
-          title: 'Voyage',
+          title: t('tabs.trip'),
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="boat" color={color} focused={focused} />
           ),
@@ -118,7 +120,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="settings"
         options={{
-          title: 'Réglages',
+          title: t('tabs.settings'),
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon name="settings" color={color} focused={focused} />
           ),

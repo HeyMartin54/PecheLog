@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { getSpeciesConfig } from '@/lib/species';
 import { supabase } from '@/lib/supabase';
@@ -34,20 +35,18 @@ type CatchRow = {
 
 type Period = '7d' | '30d' | 'year' | 'all';
 
-const PERIOD_LABELS: Record<Period, string> = {
-  '7d': '7 jours',
-  '30d': '30 jours',
-  year: 'Cette année',
-  all: 'Tout',
+const PERIOD_LABEL_KEYS: Record<Period, string> = {
+  '7d': 'stats.period7d',
+  '30d': 'stats.period30d',
+  year: 'stats.periodYear',
+  all: 'stats.periodAll',
 };
 
-const MONTHS_FR = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
-
 const TIME_SLOTS = [
-  { label: 'Matin', icon: 'sunny-outline' as const, range: [5, 10] },
-  { label: 'Midi', icon: 'partly-sunny-outline' as const, range: [10, 14] },
-  { label: 'Après-midi', icon: 'sunny' as const, range: [14, 18] },
-  { label: 'Soir', icon: 'moon-outline' as const, range: [18, 29] },
+  { labelKey: 'stats.morning', icon: 'sunny-outline' as const, range: [5, 10] },
+  { labelKey: 'stats.noon', icon: 'partly-sunny-outline' as const, range: [10, 14] },
+  { labelKey: 'stats.afternoon', icon: 'sunny' as const, range: [14, 18] },
+  { labelKey: 'stats.evening', icon: 'moon-outline' as const, range: [18, 29] },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -224,20 +223,23 @@ const hbarStyles = StyleSheet.create({
   value: { ...typography.label, color: colors.textPrimary, width: 28, textAlign: 'right' },
 });
 
-function MonthlyChart({ data }: { data: { month: string; count: number }[] }) {
+function MonthlyChart({ data, locale }: { data: { month: string; count: number }[]; locale: string }) {
   const max = Math.max(...data.map((d) => d.count), 1);
   return (
     <View style={mcStyles.container}>
       {data.map((item) => {
         const heightPct = Math.max((item.count / max) * 100, item.count > 0 ? 4 : 0);
         const mIdx = parseInt(item.month.split('-')[1], 10) - 1;
+        const monthLabel = new Date(2000, mIdx, 1)
+          .toLocaleDateString(locale, { month: 'short' })
+          .replace('.', '');
         return (
           <View key={item.month} style={mcStyles.col}>
             <Text style={mcStyles.count}>{item.count > 0 ? item.count : ''}</Text>
             <View style={mcStyles.track}>
               <View style={[mcStyles.bar, { height: `${heightPct}%` as `${number}%` }]} />
             </View>
-            <Text style={mcStyles.monthLabel}>{MONTHS_FR[mIdx]}</Text>
+            <Text style={mcStyles.monthLabel}>{monthLabel}</Text>
           </View>
         );
       })}
@@ -341,6 +343,7 @@ const recStyles = StyleSheet.create({
 
 export default function StatsScreen() {
   const { user, cachedUserId } = useAuth();
+  const { t, locale, fmtWeight, fmtLength } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
   const [allCatches, setAllCatches] = useState<CatchRow[]>([]);
@@ -437,7 +440,7 @@ export default function StatsScreen() {
 
   // ── Time of day ───────────────────────────────────────────────────────────
   const timeData = useMemo(() => {
-    const slots = TIME_SLOTS.map((s) => ({ ...s, count: 0 }));
+    const slots = TIME_SLOTS.map((s) => ({ ...s, label: t(s.labelKey), count: 0 }));
     for (const c of filtered) {
       const h = new Date(c.caught_at).getHours();
       for (const slot of slots) {
@@ -445,7 +448,7 @@ export default function StatsScreen() {
       }
     }
     return slots;
-  }, [filtered]);
+  }, [filtered, t]);
 
   // ── Depth buckets ─────────────────────────────────────────────────────────
   const depthData = useMemo(() => {
@@ -505,14 +508,14 @@ export default function StatsScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <Text style={styles.headerTitle}>Statistiques</Text>
+        <Text style={styles.headerTitle}>{t('stats.title')}</Text>
         {fromCache ? (
           <View style={styles.cacheNotice}>
             <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
-            <Text style={styles.cacheNoticeText}>Données locales</Text>
+            <Text style={styles.cacheNoticeText}>{t('home.localData')}</Text>
           </View>
         ) : allCatches.length > 0 ? (
-          <Text style={styles.headerSub}>{allCatches.length} prises au total</Text>
+          <Text style={styles.headerSub}>{t('stats.totalCatches', { n: allCatches.length })}</Text>
         ) : null}
       </View>
 
@@ -525,10 +528,8 @@ export default function StatsScreen() {
           <View style={styles.emptyIcon}>
             <Ionicons name="bar-chart" size={36} color={colors.accent} />
           </View>
-          <Text style={styles.emptyTitle}>Aucune prise encore</Text>
-          <Text style={styles.emptyBody}>
-            Enregistre tes premières prises pour voir tes statistiques ici.
-          </Text>
+          <Text style={styles.emptyTitle}>{t('home.emptyTitle')}</Text>
+          <Text style={styles.emptyBody}>{t('stats.emptyBody')}</Text>
         </View>
       ) : (
         <ScrollView
@@ -541,10 +542,10 @@ export default function StatsScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.filterRow}
           >
-            {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
+            {(Object.keys(PERIOD_LABEL_KEYS) as Period[]).map((p) => (
               <FilterChip
                 key={p}
-                label={PERIOD_LABELS[p]}
+                label={t(PERIOD_LABEL_KEYS[p])}
                 active={period === p}
                 onPress={() => setPeriod(p)}
               />
@@ -559,7 +560,7 @@ export default function StatsScreen() {
               contentContainerStyle={styles.filterRow}
             >
               <FilterChip
-                label="Toutes espèces"
+                label={t('stats.allSpecies')}
                 active={speciesFilter === null}
                 onPress={() => setSpeciesFilter(null)}
               />
@@ -582,7 +583,7 @@ export default function StatsScreen() {
               contentContainerStyle={styles.filterRow}
             >
               <FilterChip
-                label="Tous les lacs"
+                label={t('stats.allLakes')}
                 active={lakeFilter === null}
                 onPress={() => setLakeFilter(null)}
               />
@@ -599,23 +600,23 @@ export default function StatsScreen() {
 
           {/* ── KPIs ─────────────────────────────────────────────────── */}
           <View style={styles.kpiRow}>
-            <KpiCard value={String(kpis.total)} label="Prises" />
-            <KpiCard value={String(kpis.lakes)} label="Lacs" />
-            <KpiCard value={String(kpis.species)} label="Espèces" />
+            <KpiCard value={String(kpis.total)} label={t('home.statCatches')} />
+            <KpiCard value={String(kpis.lakes)} label={t('home.statLakes')} />
+            <KpiCard value={String(kpis.species)} label={t('stats.kpiSpecies')} />
             <KpiCard
-              value={kpis.maxWeight != null ? `${kpis.maxWeight.toFixed(1)} lb` : '—'}
-              label="Record"
+              value={kpis.maxWeight != null ? fmtWeight(kpis.maxWeight) : '—'}
+              label={t('stats.kpiRecord')}
             />
           </View>
 
           {/* ── Prises par mois ──────────────────────────────────────── */}
-          <SectionCard title="Prises par mois">
-            <MonthlyChart data={monthlyData} />
+          <SectionCard title={t('stats.byMonth')}>
+            <MonthlyChart data={monthlyData} locale={locale} />
           </SectionCard>
 
           {/* ── Par espèce ───────────────────────────────────────────── */}
           {speciesData.length > 0 && (
-            <SectionCard title="Par espèce">
+            <SectionCard title={t('stats.bySpecies')}>
               <View style={styles.barList}>
                 {speciesData.map((item) => (
                   <HBar
@@ -632,7 +633,7 @@ export default function StatsScreen() {
 
           {/* ── Meilleurs leurres ────────────────────────────────────── */}
           {lureData.length > 0 && (
-            <SectionCard title="Meilleurs leurres">
+            <SectionCard title={t('stats.bestLures')}>
               <View style={styles.barList}>
                 {lureData.map((item) => (
                   <HBar
@@ -648,13 +649,13 @@ export default function StatsScreen() {
           )}
 
           {/* ── Heure de la journée ───────────────────────────────────── */}
-          <SectionCard title="Heure de la journée">
+          <SectionCard title={t('stats.timeOfDay')}>
             <TimeOfDayChart data={timeData} />
           </SectionCard>
 
           {/* ── Profondeur ───────────────────────────────────────────── */}
           {hasDepthData && (
-            <SectionCard title="Profondeur des prises">
+            <SectionCard title={t('stats.depth')}>
               <View style={styles.barList}>
                 {depthData.map((b) => (
                   <HBar
@@ -671,23 +672,23 @@ export default function StatsScreen() {
 
           {/* ── Records & trophées ───────────────────────────────────── */}
           {showRecords && (
-            <SectionCard title="Records & trophées">
+            <SectionCard title={t('stats.records')}>
               <View style={recStyles.grid}>
-                {records.heaviest && (
+                {records.heaviest && records.heaviest.weight_lbs != null && (
                   <RecordTile
                     icon="trophy"
                     iconColor={colors.warning}
-                    value={`${records.heaviest.weight_lbs?.toFixed(1)} lb`}
-                    sublabel="Plus lourd"
+                    value={fmtWeight(records.heaviest.weight_lbs)}
+                    sublabel={t('stats.heaviest')}
                     species={records.heaviest.species}
                   />
                 )}
-                {records.longest && (
+                {records.longest && records.longest.length_inches != null && (
                   <RecordTile
                     icon="resize-outline"
                     iconColor={colors.species.dore}
-                    value={`${records.longest.length_inches?.toFixed(1)}"`}
-                    sublabel="Plus long"
+                    value={fmtLength(records.longest.length_inches)}
+                    sublabel={t('stats.longest')}
                     species={records.longest.species}
                   />
                 )}
@@ -696,7 +697,7 @@ export default function StatsScreen() {
                     icon="star"
                     iconColor={colors.species.maskinonge}
                     value={String(records.trophyCount)}
-                    sublabel="Trophées"
+                    sublabel={t('stats.trophies')}
                   />
                 )}
                 {records.bestDayCount > 0 && records.bestDayKey && (
@@ -704,8 +705,8 @@ export default function StatsScreen() {
                     icon="calendar"
                     iconColor={colors.accent}
                     value={String(records.bestDayCount)}
-                    sublabel="Meilleure sortie"
-                    species={new Date(records.bestDayKey).toLocaleDateString('fr-CA', {
+                    sublabel={t('stats.bestDay')}
+                    species={new Date(records.bestDayKey).toLocaleDateString(locale, {
                       day: 'numeric',
                       month: 'short',
                     })}

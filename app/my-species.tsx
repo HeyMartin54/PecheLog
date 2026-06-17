@@ -16,6 +16,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import SpeciesDetailModal from '@/components/SpeciesDetailModal';
+import { useSettings } from '@/contexts/SettingsContext';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
 import { useCustomSpecies } from '@/lib/hooks/useCustomSpecies';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
@@ -31,6 +32,7 @@ const PRESET_COLORS = [
 export default function MySpeciesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { t } = useSettings();
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [colorPickerSpecies, setColorPickerSpecies] = useState<string | null>(null);
@@ -56,12 +58,12 @@ export default function MySpeciesScreen() {
 
   const handleDelete = (species: string) => {
     Alert.alert(
-      'Supprimer cette espèce',
-      `Supprimer "${species}" ? Cette action est irréversible.`,
+      t('species.deleteTitle'),
+      t('species.deleteConfirm', { name: species }),
       [
-        { text: 'Annuler', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Supprimer',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: async () => {
             setColorPickerSpecies(null);
@@ -89,14 +91,14 @@ export default function MySpeciesScreen() {
         >
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Espèces & marqueurs</Text>
+        <Text style={styles.headerTitle}>{t('settings.speciesMarkers')}</Text>
         <TouchableOpacity
           onPress={() => setCreateModalVisible(true)}
           style={styles.addBtn}
           activeOpacity={0.8}
         >
           <Ionicons name="add" size={18} color={colors.bg} />
-          <Text style={styles.addBtnText}>Créer</Text>
+          <Text style={styles.addBtnText}>{t('species.create')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -187,7 +189,7 @@ export default function MySpeciesScreen() {
                 activeOpacity={0.8}
               >
                 <Ionicons name="refresh" size={13} color={colors.textMuted} />
-                <Text style={styles.resetText}>Réinitialiser</Text>
+                <Text style={styles.resetText}>{t('map.reset')}</Text>
               </TouchableOpacity>
             )}
           </Pressable>

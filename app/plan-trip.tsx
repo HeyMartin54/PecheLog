@@ -30,6 +30,7 @@ import { fetchWithTimeout, isOnline } from '@/lib/net';
 import { SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import {
   addFrequentCompanions,
   clearPrefillTrip,
@@ -48,6 +49,7 @@ export default function PlanTripScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { t } = useSettings();
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const isEditMode = mode === 'edit';
   const { activeSpecies } = useActiveSpecies();
@@ -198,7 +200,7 @@ export default function PlanTripScreen() {
   const handleStart = async () => {
     const validLakes = lakes.filter((l) => l.name.trim());
     if (validLakes.length === 0) {
-      Alert.alert('Lac requis', 'Ajoute au moins un lac pour continuer.');
+      Alert.alert(t('plan.lakeRequiredTitle'), t('plan.lakeRequiredBody'));
       return;
     }
 
@@ -216,7 +218,7 @@ export default function PlanTripScreen() {
       router.back();
     } catch (e) {
       console.warn('[PlanTrip] Erreur', e);
-      Alert.alert('Erreur', isEditMode ? 'Impossible de modifier le voyage. Réessaie.' : "Impossible de démarrer le voyage. Réessaie.");
+      Alert.alert(t('common.error'), isEditMode ? t('plan.editError') : t('plan.startError'));
     } finally {
       setSaving(false);
     }
@@ -242,17 +244,17 @@ export default function PlanTripScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton} activeOpacity={0.7}>
             <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{isEditMode ? 'Modifier le voyage' : 'Planifier un voyage'}</Text>
+          <Text style={styles.headerTitle}>{isEditMode ? t('plan.editTitle') : t('plan.title')}</Text>
           <View style={{ width: 36 }} />
         </View>
 
         {/* ── Lacs ──────────────────────────────────────────────────── */}
-        <SectionTitle>🗺 Lacs visités</SectionTitle>
+        <SectionTitle>{t('plan.lakes')}</SectionTitle>
 
         {lakes.map((lake, index) => (
           <View key={index} style={styles.lakeCard}>
             <View style={styles.lakeHeader}>
-              <Text style={styles.lakeNumber}>Lac {index + 1}</Text>
+              <Text style={styles.lakeNumber}>{t('plan.lakeN', { n: index + 1 })}</Text>
               {lakes.length > 1 && (
                 <TouchableOpacity onPress={() => removeLake(index)} activeOpacity={0.7}>
                   <Ionicons name="close-circle-outline" size={20} color={colors.error} />
@@ -267,7 +269,7 @@ export default function PlanTripScreen() {
               ) : (
                 <TextInput
                   style={styles.textInput}
-                  placeholder="Nom du lac"
+                  placeholder={t('plan.lakeName')}
                   placeholderTextColor={colors.textMuted}
                   value={lake.name}
                   onChangeText={(t) => updateLakeName(index, t)}
@@ -275,7 +277,7 @@ export default function PlanTripScreen() {
               )}
             </View>
 
-            <Text style={styles.subLabel}>ESPÈCES CIBLES</Text>
+            <Text style={styles.subLabel}>{t('plan.targetSpecies')}</Text>
             <View style={styles.chipRow}>
               {fishSpecies.map((s) => {
                 const selected = lake.targetSpecies.includes(s);
@@ -302,11 +304,11 @@ export default function PlanTripScreen() {
 
         <TouchableOpacity style={styles.addLakeButton} onPress={addLake} activeOpacity={0.75}>
           <Ionicons name="add-circle-outline" size={18} color={colors.accent} />
-          <Text style={styles.addLakeText}>Ajouter un lac</Text>
+          <Text style={styles.addLakeText}>{t('plan.addLake')}</Text>
         </TouchableOpacity>
 
         {/* ── Compagnons ────────────────────────────────────────────── */}
-        <SectionTitle>👥 Compagnons</SectionTitle>
+        <SectionTitle>{t('plan.companions')}</SectionTitle>
 
         <View style={styles.card}>
           <View style={styles.inputRow}>
@@ -314,7 +316,7 @@ export default function PlanTripScreen() {
             <TextInput
               ref={companionInputRef}
               style={styles.textInput}
-              placeholder="Nom du compagnon"
+              placeholder={t('plan.companionName')}
               placeholderTextColor={colors.textMuted}
               value={companionInput}
               onChangeText={setCompanionInput}
@@ -323,7 +325,7 @@ export default function PlanTripScreen() {
             />
             {companionInput.trim().length > 0 && (
               <TouchableOpacity onPress={addCompanion} style={styles.addBtn}>
-                <Text style={styles.addBtnText}>Ajouter</Text>
+                <Text style={styles.addBtnText}>{t('plan.add')}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -346,7 +348,7 @@ export default function PlanTripScreen() {
 
           {suggestedCompanions.length > 0 && (
             <View style={{ marginTop: spacing.sm }}>
-              <Text style={styles.subLabel}>FRÉQUENTS</Text>
+              <Text style={styles.subLabel}>{t('plan.frequent')}</Text>
               <View style={styles.chipRow}>
                 {suggestedCompanions.slice(0, 6).map((c) => (
                   <TouchableOpacity key={c} style={styles.chip} onPress={() => addFrequent(c)} activeOpacity={0.75}>
@@ -359,7 +361,7 @@ export default function PlanTripScreen() {
         </View>
 
         {/* ── Leurres ───────────────────────────────────────────────── */}
-        <SectionTitle>🪝 Leurres amenés</SectionTitle>
+        <SectionTitle>{t('plan.lures')}</SectionTitle>
 
         <View style={styles.card}>
           {luresSelected.length > 0 && (
@@ -368,18 +370,18 @@ export default function PlanTripScreen() {
           <TouchableOpacity style={styles.lurePickerButton} onPress={() => setShowLurePicker(true)} activeOpacity={0.75}>
             <Ionicons name="add-circle-outline" size={18} color={colors.accent} />
             <Text style={styles.lurePickerText}>
-              {luresSelected.length === 0 ? 'Sélectionner des leurres' : 'Ajouter un leurre'}
+              {luresSelected.length === 0 ? t('plan.selectLures') : t('plan.addLure')}
             </Text>
           </TouchableOpacity>
         </View>
 
         {/* ── Notes ─────────────────────────────────────────────────── */}
-        <SectionTitle>📝 Notes (optionnel)</SectionTitle>
+        <SectionTitle>{t('plan.notes')}</SectionTitle>
 
         <View style={styles.card}>
           <TextInput
             style={styles.notesInput}
-            placeholder="Conditions prévues, objectifs de la journée..."
+            placeholder={t('plan.notesPlaceholder')}
             placeholderTextColor={colors.textMuted}
             value={notes}
             onChangeText={setNotes}
@@ -402,7 +404,7 @@ export default function PlanTripScreen() {
           ) : (
             <>
               <Ionicons name={isEditMode ? 'checkmark' : 'navigate'} size={20} color={colors.bg} />
-              <Text style={styles.startButtonText}>{isEditMode ? 'Enregistrer les modifications' : 'Démarrer le voyage'}</Text>
+              <Text style={styles.startButtonText}>{isEditMode ? t('plan.saveChanges') : t('plan.start')}</Text>
             </>
           )}
         </TouchableOpacity>

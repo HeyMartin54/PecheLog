@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import LureFormModal from '@/components/LureFormModal';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import {
   createUserLure,
   deleteUserLure,
@@ -31,6 +32,7 @@ export default function MyLuresScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { t } = useSettings();
 
   const [lures, setLures] = useState<UserLure[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,7 +74,7 @@ export default function MyLuresScreen() {
       const { data: urlData } = supabase.storage.from('catch-media').getPublicUrl(storagePath);
       return urlData.publicUrl;
     } catch {
-      Alert.alert('Avertissement', 'La photo n\'a pas pu être uploadée. Le leurre sera sauvegardé sans photo.');
+      Alert.alert(t('lures.photoWarnTitle'), t('lures.photoWarnBody'));
       return existingPhotoUrl ?? null;
     }
   };
@@ -93,7 +95,7 @@ export default function MyLuresScreen() {
     if (editingLure) {
       const ok = await updateUserLure(editingLure.id, { ...lureData, photo_url });
       if (!ok) {
-        Alert.alert('Erreur', 'Impossible de modifier ce leurre.');
+        Alert.alert(t('common.error'), t('lures.editError'));
         return;
       }
       const updated = lures.map((l) =>
@@ -104,7 +106,7 @@ export default function MyLuresScreen() {
     } else {
       const created = await createUserLure(user.id, { ...lureData, photo_url });
       if (!created) {
-        Alert.alert('Erreur', 'Impossible de créer ce leurre.');
+        Alert.alert(t('common.error'), t('lures.createError'));
         return;
       }
       const updated = [...lures, created].sort((a, b) => a.name.localeCompare(b.name));
@@ -118,7 +120,7 @@ export default function MyLuresScreen() {
     setFormVisible(false);
     const ok = await deleteUserLure(editingLure.id);
     if (!ok) {
-      Alert.alert('Erreur', 'Impossible de supprimer ce leurre.');
+      Alert.alert(t('common.error'), t('lures.deleteError'));
       return;
     }
     const updated = lures.filter((l) => l.id !== editingLure.id);
@@ -162,7 +164,7 @@ export default function MyLuresScreen() {
         >
           <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Mes leurres</Text>
+        <Text style={styles.headerTitle}>{t('settings.myLures')}</Text>
         <TouchableOpacity
           onPress={openCreate}
           style={styles.addBtn}
@@ -190,12 +192,10 @@ export default function MyLuresScreen() {
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>🎣</Text>
-              <Text style={styles.emptyTitle}>Aucun leurre</Text>
-              <Text style={styles.emptySubtitle}>
-                Appuyez sur + pour ajouter votre premier leurre.
-              </Text>
+              <Text style={styles.emptyTitle}>{t('lures.empty')}</Text>
+              <Text style={styles.emptySubtitle}>{t('lures.emptySub')}</Text>
               <TouchableOpacity style={styles.emptyCreateBtn} onPress={openCreate} activeOpacity={0.8}>
-                <Text style={styles.emptyCreateBtnText}>Créer un leurre</Text>
+                <Text style={styles.emptyCreateBtnText}>{t('lures.create')}</Text>
               </TouchableOpacity>
             </View>
           }

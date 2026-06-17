@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
     ActivityIndicator,
     ScrollView,
@@ -9,16 +9,85 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { isOnline } from '@/lib/net';
+import { getOfflineQueueCount, trySyncOfflineCatches } from '@/lib/offlineSync';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+
+// ─── Sélecteur segmenté générique ─────────────────────────────────────────────
+
+function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <View style={styles.segmented}>
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <TouchableOpacity
+            key={opt.value}
+            style={[styles.segment, active && styles.segmentActive]}
+            onPress={() => onChange(opt.value)}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+              {opt.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const { settings, updateSettings, t } = useSettings();
   const insets = useSafeAreaInsets();
   const [loggingOut, setLoggingOut] = useState(false);
+
+  // ── File d'attente hors-ligne ──
+  const [queueCount, setQueueCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  const refreshQueueCount = useCallback(async () => {
+    setQueueCount(await getOfflineQueueCount());
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshQueueCount();
+    }, [refreshQueueCount]),
+  );
+
+  const handleSyncNow = async () => {
+    if (syncing || !user?.id) return;
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      if (!(await isOnline())) {
+        setSyncMessage(t('settings.syncOffline'));
+        return;
+      }
+      await trySyncOfflineCatches(user.id);
+      await refreshQueueCount();
+      setSyncMessage(t('settings.syncDone'));
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleLogout = async () => {
     if (loggingOut) return;
@@ -41,7 +110,7 @@ export default function SettingsScreen() {
     >
       {/* Profil */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Profil</Text>
+        <Text style={styles.sectionTitle}>{t('settings.profile')}</Text>
         <View style={styles.card}>
           <View style={styles.profileRow}>
             <View style={styles.avatarWrapper}>
@@ -49,9 +118,9 @@ export default function SettingsScreen() {
             </View>
             <View style={styles.profileInfo}>
               <Text style={styles.profileEmail} numberOfLines={1}>
-                {user?.email || 'Utilisateur'}
+                {user?.email || t('settings.user')}
               </Text>
-              <Text style={styles.profileSubtext}>Connecté</Text>
+              <Text style={styles.profileSubtext}>{t('settings.connected')}</Text>
             </View>
           </View>
         </View>
@@ -59,47 +128,123 @@ export default function SettingsScreen() {
 
       {/* Paramètres */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Paramètres</Text>
+        <Text style={styles.sectionTitle}>{t('settings.preferences')}</Text>
         <View style={styles.card}>
-          <TouchableOpacity style={styles.settingRow}>
+          <View style={styles.settingRow}>
             <View style={styles.settingLeft}>
               <Ionicons name="language" size={20} color={colors.accent} />
-              <Text style={styles.settingLabel}>Langue</Text>
+              <Text style={styles.settingLabel}>{t('settings.language')}</Text>
             </View>
-            <View style={styles.settingRight}>
-              <Text style={styles.settingValue}>Français</Text>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </View>
-          </TouchableOpacity>
+            <Segmented
+              options={[
+                { value: 'fr', label: t('settings.french') },
+                { value: 'en', label: t('settings.english') },
+              ]}
+              value={settings.language}
+              onChange={(language) => updateSettings({ language })}
+            />
+          </View>
 
-          <TouchableOpacity style={styles.settingRow}>
+          <View style={styles.settingRow}>
             <View style={styles.settingLeft}>
-              <Ionicons name="locate" size={20} color={colors.accent} />
-              <Text style={styles.settingLabel}>Unités</Text>
+              <Ionicons name="thermometer" size={20} color={colors.accent} />
+              <Text style={styles.settingLabel}>{t('settings.temperature')}</Text>
             </View>
-            <View style={styles.settingRight}>
-              <Text style={styles.settingValue}>Métriques</Text>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            <Segmented
+              options={[
+                { value: 'C', label: '°C' },
+                { value: 'F', label: '°F' },
+              ]}
+              value={settings.tempUnit}
+              onChange={(tempUnit) => updateSettings({ tempUnit })}
+            />
+          </View>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingLeft}>
+              <Ionicons name="barbell" size={20} color={colors.accent} />
+              <Text style={styles.settingLabel}>{t('settings.weight')}</Text>
             </View>
+            <Segmented
+              options={[
+                { value: 'lb', label: t('unit.lb') },
+                { value: 'kg', label: t('unit.kg') },
+              ]}
+              value={settings.weightUnit}
+              onChange={(weightUnit) => updateSettings({ weightUnit })}
+            />
+          </View>
+
+          <View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
+            <View style={styles.settingLeft}>
+              <Ionicons name="resize" size={20} color={colors.accent} />
+              <Text style={styles.settingLabel}>{t('settings.length')}</Text>
+            </View>
+            <Segmented
+              options={[
+                { value: 'in', label: t('unit.in') },
+                { value: 'cm', label: t('unit.cm') },
+              ]}
+              value={settings.lengthUnit}
+              onChange={(lengthUnit) => updateSettings({ lengthUnit })}
+            />
+          </View>
+        </View>
+      </View>
+
+      {/* Synchronisation */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>{t('settings.sync')}</Text>
+        <View style={styles.card}>
+          <View style={styles.settingRow}>
+            <View style={styles.settingLeft}>
+              <Ionicons name="cloud-upload" size={20} color={colors.accent} />
+              <Text style={styles.settingLabel}>{t('settings.pendingCatches')}</Text>
+            </View>
+            <View style={[styles.queueBadge, queueCount > 0 && styles.queueBadgeActive]}>
+              <Text style={[styles.queueBadgeText, queueCount > 0 && styles.queueBadgeTextActive]}>
+                {queueCount}
+              </Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.settingRow, { borderBottomWidth: 0 }, (syncing || queueCount === 0) && styles.settingRowDisabled]}
+            onPress={handleSyncNow}
+            disabled={syncing || queueCount === 0}
+            activeOpacity={0.8}
+          >
+            <View style={styles.settingLeft}>
+              {syncing ? (
+                <ActivityIndicator size="small" color={colors.accent} />
+              ) : (
+                <Ionicons name="sync" size={20} color={colors.accent} />
+              )}
+              <Text style={styles.settingLabel}>
+                {syncing ? t('settings.syncing') : t('settings.syncNow')}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </View>
+        {syncMessage ? <Text style={styles.syncMessage}>{syncMessage}</Text> : null}
       </View>
 
       {/* Équipement */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Équipement</Text>
+        <Text style={styles.sectionTitle}>{t('settings.equipment')}</Text>
         <View style={styles.card}>
           <TouchableOpacity style={styles.settingRow} onPress={() => router.push('/my-lures')} activeOpacity={0.8}>
             <View style={styles.settingLeft}>
               <Ionicons name="fish" size={20} color={colors.accent} />
-              <Text style={styles.settingLabel}>Mes leurres</Text>
+              <Text style={styles.settingLabel}>{t('settings.myLures')}</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
           <TouchableOpacity style={[styles.settingRow, { borderBottomWidth: 0 }]} onPress={() => router.push('/my-species')} activeOpacity={0.8}>
             <View style={styles.settingLeft}>
               <Ionicons name="color-palette" size={20} color={colors.accent} />
-              <Text style={styles.settingLabel}>Espèces & marqueurs</Text>
+              <Text style={styles.settingLabel}>{t('settings.speciesMarkers')}</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
@@ -108,10 +253,10 @@ export default function SettingsScreen() {
 
       {/* À propos */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>À propos</Text>
+        <Text style={styles.sectionTitle}>{t('settings.about')}</Text>
         <View style={styles.card}>
           <View style={styles.aboutRow}>
-            <Text style={styles.aboutLabel}>Version</Text>
+            <Text style={styles.aboutLabel}>{t('settings.version')}</Text>
             <Text style={styles.aboutValue}>1.0.0</Text>
           </View>
         </View>
@@ -130,7 +275,7 @@ export default function SettingsScreen() {
           ) : (
             <>
               <Ionicons name="log-out" size={18} color={colors.error} />
-              <Text style={styles.logoutText}>Déconnexion</Text>
+              <Text style={styles.logoutText}>{t('settings.logout')}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -214,6 +359,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
+  settingRowDisabled: {
+    opacity: 0.5,
+  },
   settingLeft: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -224,14 +372,63 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontWeight: '500',
   },
-  settingRight: {
+
+  // Sélecteur segmenté
+  segmented: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
   },
-  settingValue: {
-    ...typography.bodySmall,
+  segment: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    minWidth: 44,
+    alignItems: 'center',
+  },
+  segmentActive: {
+    backgroundColor: colors.accentSubtle,
+  },
+  segmentText: {
+    ...typography.caption,
     color: colors.textMuted,
+    fontWeight: '600',
+  },
+  segmentTextActive: {
+    color: colors.accent,
+  },
+
+  // File d'attente
+  queueBadge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  queueBadgeActive: {
+    backgroundColor: colors.accentSubtle,
+    borderColor: colors.accentGlow,
+  },
+  queueBadgeText: {
+    ...typography.caption,
+    color: colors.textMuted,
+    fontWeight: '700',
+  },
+  queueBadgeTextActive: {
+    color: colors.accent,
+  },
+  syncMessage: {
+    ...typography.caption,
+    color: colors.textMuted,
+    marginTop: spacing.sm,
+    marginLeft: spacing.sm,
   },
 
   // À propos

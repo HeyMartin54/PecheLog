@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useSettings } from '@/contexts/SettingsContext';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
 import { useCustomSpecies } from '@/lib/hooks/useCustomSpecies';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
@@ -40,6 +41,7 @@ type Props = {
 
 export default function SpeciesDetailModal({ visible, species, onClose, onCreated }: Props) {
   const insets = useSafeAreaInsets();
+  const { t } = useSettings();
   const isCreating = species === null;
 
   const { getColor, setColor, resetColor, customColors } = useSpeciesColors();
@@ -82,7 +84,7 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
   const handleCreate = async () => {
     const name = newName.trim();
     if (!name) {
-      Alert.alert('Nom requis', "L'espèce doit avoir un nom.");
+      Alert.alert(t('lureForm.nameRequired'), t('speciesForm.nameRequiredBody'));
       return;
     }
     const color = selectedColor ?? PRESET_COLORS[0];
@@ -96,12 +98,12 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
   const handleDelete = () => {
     if (!species) return;
     Alert.alert(
-      'Supprimer cette espèce',
-      `Supprimer "${species}" ? Cette action est irréversible.`,
+      t('species.deleteTitle'),
+      t('species.deleteConfirm', { name: species }),
       [
-        { text: 'Annuler', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Supprimer',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: async () => {
             await removeSpecies(species);
@@ -129,14 +131,14 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
         {/* Header */}
         <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={styles.cancelText}>Annuler</Text>
+            <Text style={styles.cancelText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
-            {isCreating ? 'Nouvelle espèce' : species}
+            {isCreating ? t('speciesForm.newSpecies') : species}
           </Text>
           {isCreating ? (
             <TouchableOpacity onPress={handleCreate} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.saveText}>Créer</Text>
+              <Text style={styles.saveText}>{t('species.create')}</Text>
             </TouchableOpacity>
           ) : (
             <View style={{ width: 55 }} />
@@ -174,10 +176,10 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
           {/* Champ nom (mode création) */}
           {isCreating && (
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Nom de l'espèce *</Text>
+              <Text style={styles.fieldLabel}>{t('speciesForm.name')}</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Ex: Ouananiche, Carpe, Achigan…"
+                placeholder={t('speciesForm.namePlaceholder')}
                 placeholderTextColor={colors.textMuted}
                 value={newName}
                 onChangeText={setNewName}
@@ -190,7 +192,7 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
           {/* Toggle activer (mode édition) */}
           {!isCreating && (
             <View style={styles.toggleRow}>
-              <Text style={styles.toggleLabel}>Espèce active</Text>
+              <Text style={styles.toggleLabel}>{t('speciesForm.active')}</Text>
               <Switch
                 value={active}
                 onValueChange={() => { if (species) toggleActive(species); }}
@@ -202,7 +204,7 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
 
           {/* Couleur du marqueur */}
           <View style={styles.colorSection}>
-            <Text style={styles.fieldLabel}>COULEUR DU MARQUEUR</Text>
+            <Text style={styles.fieldLabel}>{t('speciesForm.markerColor')}</Text>
             <View style={styles.colorGrid}>
               {PRESET_COLORS.map((hex) => {
                 const isSelected = displayColor === hex;
@@ -224,7 +226,7 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
             {!isCreating && hasCustomColor && (
               <TouchableOpacity style={styles.resetBtn} onPress={handleReset} activeOpacity={0.8}>
                 <Ionicons name="refresh" size={14} color={colors.textMuted} />
-                <Text style={styles.resetText}>Réinitialiser la couleur</Text>
+                <Text style={styles.resetText}>{t('speciesForm.resetColor')}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -233,7 +235,7 @@ export default function SpeciesDetailModal({ visible, species, onClose, onCreate
           {!isCreating && isSpeciesCustom && (
             <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete} activeOpacity={0.8}>
               <Ionicons name="trash-outline" size={16} color={colors.error} />
-              <Text style={styles.deleteBtnText}>Supprimer cette espèce</Text>
+              <Text style={styles.deleteBtnText}>{t('species.deleteTitle')}</Text>
             </TouchableOpacity>
           )}
         </ScrollView>

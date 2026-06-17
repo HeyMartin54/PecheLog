@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import { useSettings } from '@/contexts/SettingsContext';
 import type { UserLure } from '@/lib/lureStorage';
 
 type Props = {
@@ -35,6 +36,7 @@ export default function LurePicker({
   onClose,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const { t } = useSettings();
   const [search, setSearch] = useState('');
 
   const handleClose = useCallback(() => {
@@ -104,7 +106,7 @@ export default function LurePicker({
       >
         {/* Header */}
         <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
-          <Text style={styles.headerTitle}>🪝 Choisir un leurre</Text>
+          <Text style={styles.headerTitle}>{t('picker.title')}</Text>
           <TouchableOpacity onPress={handleClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={styles.closeBtn}>✕</Text>
           </TouchableOpacity>
@@ -115,7 +117,7 @@ export default function LurePicker({
           <Text style={styles.searchIcon}>🔍</Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Rechercher par nom, couleur, grosseur…"
+            placeholder={t('picker.search')}
             placeholderTextColor={colors.textMuted}
             value={search}
             onChangeText={setSearch}
@@ -141,12 +143,10 @@ export default function LurePicker({
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>🪝</Text>
               <Text style={styles.emptyText}>
-                {userLures.length === 0 ? 'Aucun leurre dans votre boîte' : 'Aucun résultat'}
+                {userLures.length === 0 ? t('picker.emptyBox') : t('picker.noResult')}
               </Text>
               <Text style={styles.emptySubtext}>
-                {userLures.length === 0
-                  ? 'Créez votre premier leurre ci-dessous.'
-                  : 'Essayez d\'autres mots-clés.'}
+                {userLures.length === 0 ? t('picker.emptyBoxSub') : t('picker.noResultSub')}
               </Text>
             </View>
           }
@@ -159,7 +159,7 @@ export default function LurePicker({
             onPress={() => { handleClose(); onCreateNew(); }}
             activeOpacity={0.8}
           >
-            <Text style={styles.createBtnText}>＋ Créer un nouveau leurre</Text>
+            <Text style={styles.createBtnText}>{t('picker.createNew')}</Text>
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>

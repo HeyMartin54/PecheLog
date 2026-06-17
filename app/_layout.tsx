@@ -11,6 +11,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useColorScheme } from '@/components/useColorScheme';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { SettingsProvider } from '@/contexts/SettingsContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { trySyncOfflineCatches } from '@/lib/offlineSync';
 
@@ -82,6 +83,7 @@ function RootLayoutNav() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
+        <SettingsProvider>
         <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
           <View style={styles.root}>
             <Stack>
@@ -98,6 +100,7 @@ function RootLayoutNav() {
             <SyncManager />
           </View>
         </ThemeProvider>
+        </SettingsProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

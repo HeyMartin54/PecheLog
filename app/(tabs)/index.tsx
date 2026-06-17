@@ -16,6 +16,8 @@ import ConnectionBadge from '@/components/ConnectionBadge';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { displayWeight } from '@/lib/settingsStorage';
 import { useLocation } from '@/lib/hooks/useLocation';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useWeather } from '@/lib/hooks/useWeather';
@@ -24,10 +26,10 @@ import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catc
 import { colors, typography, spacing, radius, shadow } from '@/lib/theme';
 import { getSpeciesConfig } from '@/lib/species';
 
-type Stat = {
-  label: string;
-  value: string;
-  icon: string;
+type HomeSummary = {
+  count: number;
+  lakes: number;
+  recordLb: number | null;
 };
 
 type CatchRow = {
@@ -39,32 +41,27 @@ type CatchRow = {
   caught_at: string;
 };
 
-function formatRelativeTimeFr(iso: string): string {
+type Translator = (key: string, vars?: Record<string, string | number>) => string;
+
+function formatRelativeTime(iso: string, t: Translator, locale: string): string {
   const d = new Date(iso);
   const diffMs = Date.now() - d.getTime();
   const diffM = Math.floor(diffMs / 60000);
-  if (diffM < 1) return "à l'instant";
-  if (diffM < 60) return `il y a ${diffM} min`;
+  if (diffM < 1) return t('time.justNow');
+  if (diffM < 60) return t('time.minAgo', { n: diffM });
   const diffH = Math.floor(diffM / 60);
-  if (diffH < 24) return `il y a ${diffH} h`;
+  if (diffH < 24) return t('time.hourAgo', { n: diffH });
   const diffD = Math.floor(diffH / 24);
-  if (diffD === 1) return 'hier';
-  if (diffD < 7) return `il y a ${diffD} j`;
-  return d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' });
+  if (diffD === 1) return t('time.yesterday');
+  if (diffD < 7) return t('time.dayAgo', { n: diffD });
+  return d.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
 }
 
-function catchMetaLine(row: CatchRow): string {
-  const lake = row.lake_name?.trim() || 'Lieu inconnu';
-  const when = formatRelativeTimeFr(row.caught_at);
+function catchMetaLine(row: CatchRow, t: Translator, locale: string): string {
+  const lake = row.lake_name?.trim() || t('home.unknownPlace');
+  const when = formatRelativeTime(row.caught_at, t, locale);
   const lure = row.lure?.trim();
   return lure ? `${lake} · ${when} · ${lure}` : `${lake} · ${when}`;
-}
-
-function sizeLabel(row: CatchRow): string {
-  if (row.weight_lbs != null && !Number.isNaN(row.weight_lbs)) {
-    return `${row.weight_lbs.toFixed(1)} lb`;
-  }
-  return '';
 }
 
 // ── Composant avatar d'espèce ──────────────────────────────────────────────
@@ -138,13 +135,10 @@ export default function HomeScreen() {
     coords?.coords.longitude ?? null,
   );
   const isConnected = useNetworkStatus();
+  const { settings, t, locale, fmtWeight, fmtTemp } = useSettings();
 
-  const [displayName, setDisplayName] = useState<string>('Pêcheur');
-  const [stats, setStats] = useState<Stat[]>([
-    { label: 'Prises', value: '—', icon: 'fish' },
-    { label: 'Lacs', value: '—', icon: 'water' },
-    { label: 'lb record', value: '—', icon: 'trophy' },
-  ]);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [summary, setSummary] = useState<HomeSummary | null>(null);
   const [recentCatches, setRecentCatches] = useState<CatchRow[]>([]);
   const [homeDataLoading, setHomeDataLoading] = useState(false);
   const [fromCache, setFromCache] = useState(false);
@@ -158,15 +152,7 @@ export default function HomeScreen() {
       .filter((w): w is number => typeof w === 'number' && !Number.isNaN(w));
     const recordLb = weights.length > 0 ? Math.max(...weights) : null;
 
-    setStats([
-      { label: 'Prises', value: String(list.length), icon: 'fish' },
-      { label: 'Lacs', value: String(lakeSet.size), icon: 'water' },
-      {
-        label: 'lb record',
-        value: recordLb != null ? recordLb.toFixed(1) : '—',
-        icon: 'trophy',
-      },
-    ]);
+    setSummary({ count: list.length, lakes: lakeSet.size, recordLb });
     setRecentCatches(list.slice(0, 5));
   };
 
@@ -200,7 +186,7 @@ export default function HomeScreen() {
         } else if (profile?.display_name?.trim()) {
           setDisplayName(profile.display_name.trim());
         } else if (user.email) {
-          setDisplayName(user.email.split('@')[0] ?? 'Pêcheur');
+          setDisplayName(user.email.split('@')[0] ?? null);
         }
       }
 
@@ -233,13 +219,26 @@ export default function HomeScreen() {
     }, [loadHomeData]),
   );
 
-  const headerLakeName = lakeName ?? 'Lac inconnu';
+  const headerLakeName = lakeName ?? t('home.unknownLake');
   const headerTemp =
-    temperatureC != null ? `${temperatureC.toFixed(1)}°C` : null;
+    temperatureC != null ? fmtTemp(temperatureC) : null;
   const headerWind =
     windKmh != null
       ? `${windDirection ? windDirection + ' ' : ''}${windKmh.toFixed(1)} km/h`
       : null;
+
+  const stats = [
+    { label: t('home.statCatches'), value: summary ? String(summary.count) : '—', icon: 'fish' },
+    { label: t('home.statLakes'), value: summary ? String(summary.lakes) : '—', icon: 'water' },
+    {
+      label: t('home.statRecord', { unit: t(`unit.${settings.weightUnit}`) }),
+      value:
+        summary?.recordLb != null
+          ? displayWeight(summary.recordLb, settings.weightUnit).toFixed(1)
+          : '—',
+      icon: 'trophy',
+    },
+  ];
 
   return (
     <View style={styles.container}>
@@ -251,8 +250,8 @@ export default function HomeScreen() {
         <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
           <View style={styles.greetingRow}>
             <View>
-              <Text style={styles.greeting}>Bonjour 👋</Text>
-              <Text style={styles.name}>{displayName}</Text>
+              <Text style={styles.greeting}>{t('home.greeting')}</Text>
+              <Text style={styles.name}>{displayName ?? t('home.fisher')}</Text>
             </View>
             <ConnectionBadge />
           </View>
@@ -281,7 +280,7 @@ export default function HomeScreen() {
               {!headerTemp && !headerWind && (
                 <View style={styles.weatherBadge}>
                   <ActivityIndicator size="small" color={colors.accent} />
-                  <Text style={styles.weatherBadgeText}>Météo…</Text>
+                  <Text style={styles.weatherBadgeText}>{t('home.weatherLoading')}</Text>
                 </View>
               )}
             </View>
@@ -298,8 +297,8 @@ export default function HomeScreen() {
             <Ionicons name="add" size={28} color={colors.bg} />
           </View>
           <View style={styles.quickLogText}>
-            <Text style={styles.quickLogTitle}>Nouvelle prise !</Text>
-            <Text style={styles.quickLogSubtitle}>1 bouton — on s'occupe du reste</Text>
+            <Text style={styles.quickLogTitle}>{t('home.newCatch')}</Text>
+            <Text style={styles.quickLogSubtitle}>{t('home.newCatchSub')}</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={`${colors.bg}AA`} />
         </TouchableOpacity>
@@ -322,15 +321,15 @@ export default function HomeScreen() {
 
         {/* ── Prises récentes ───────────────────────────────────────────────── */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Prises récentes</Text>
+          <Text style={styles.sectionTitle}>{t('home.recentCatches')}</Text>
           {fromCache ? (
             <View style={styles.cacheNotice}>
               <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
-              <Text style={styles.cacheNoticeText}>Données locales</Text>
+              <Text style={styles.cacheNoticeText}>{t('home.localData')}</Text>
             </View>
           ) : (
             <TouchableOpacity>
-              <Text style={styles.sectionLink}>Voir tout</Text>
+              <Text style={styles.sectionLink}>{t('home.seeAll')}</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -339,14 +338,15 @@ export default function HomeScreen() {
           {recentCatches.length === 0 && !homeDataLoading ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateIcon}>🎣</Text>
-              <Text style={styles.emptyStateTitle}>Aucune prise encore</Text>
-              <Text style={styles.emptyStateBody}>
-                Enregistre ta première prise avec le bouton ci-dessus.
-              </Text>
+              <Text style={styles.emptyStateTitle}>{t('home.emptyTitle')}</Text>
+              <Text style={styles.emptyStateBody}>{t('home.emptyBody')}</Text>
             </View>
           ) : (
             recentCatches.map((catchItem, index) => {
-              const size = sizeLabel(catchItem);
+              const size =
+                catchItem.weight_lbs != null && !Number.isNaN(catchItem.weight_lbs)
+                  ? fmtWeight(catchItem.weight_lbs)
+                  : '';
               const cfg = getSpeciesConfig(catchItem.species);
               return (
                 <TouchableOpacity
@@ -369,7 +369,7 @@ export default function HomeScreen() {
                       ) : null}
                     </View>
                     <Text style={styles.catchMeta} numberOfLines={1}>
-                      {catchMetaLine(catchItem)}
+                      {catchMetaLine(catchItem, t, locale)}
                     </Text>
                   </View>
                   <View style={[styles.speciesDot, { backgroundColor: cfg.color }]} />

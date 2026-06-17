@@ -1,25 +1,41 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   ActivityIndicator,
+  Alert,
+  Modal,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import MapView, { Marker, Region } from 'react-native-maps';
+import MapView, { Marker, Polygon, Region } from 'react-native-maps';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
+import {
+  createZone,
+  deleteZone,
+  fetchZoneCatches,
+  leaveZone,
+  loadZones,
+  pointInPolygon,
+  redeemZoneCode,
+  type SharedZone,
+  type ZonePoint,
+} from '@/lib/zones';
 import { colors } from '@/lib/theme';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -45,7 +61,7 @@ type FilterState = {
   weather: string[];
 };
 
-type FilterPanel = 'species' | 'lure' | 'dates' | 'weather' | null;
+type FilterPanel = 'search' | 'zones' | 'species' | 'lure' | 'dates' | 'weather' | null;
 
 type Cluster = {
   id: string;
@@ -64,14 +80,14 @@ const WEATHER_OPTIONS = ['☀️ Ensoleillé', '⛅ Nuageux', '🌧️ Pluie', '
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
-function formatDateFr(iso: string): string {
-  return new Date(iso).toLocaleDateString('fr-CA', {
+function formatDate(iso: string, locale: string): string {
+  return new Date(iso).toLocaleDateString(locale, {
     day: 'numeric', month: 'short', year: 'numeric',
   });
 }
 
 
-function computeRegion(pins: CatchPin[]): Region | null {
+function computeRegion(pins: { latitude: number; longitude: number }[]): Region | null {
   if (pins.length === 0) return null;
   const lats = pins.map((p) => p.latitude);
   const lngs = pins.map((p) => p.longitude);
@@ -89,8 +105,8 @@ function countActiveFilters(f: FilterState): number {
   return f.species.length + f.lures.length + (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0) + f.weather.length;
 }
 
-function formatShortDate(d: Date): string {
-  return d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' });
+function formatShortDate(d: Date, locale: string): string {
+  return d.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
 }
 
 function toggleItem(arr: string[], item: string): string[] {
@@ -139,6 +155,7 @@ function clusterCatches(catches: CatchPin[], latDelta: number, lngDelta: number)
 export default function MapScreen() {
   const router = useRouter();
   const { user, cachedUserId } = useAuth();
+  const { t, locale, fmtWeight } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -155,6 +172,29 @@ export default function MapScreen() {
   const [fromCache, setFromCache] = useState(false);
   const [selectedCatch, setSelectedCatch] = useState<CatchPin | null>(null);
   const [mapDeltas, setMapDeltas] = useState({ lat: 8, lng: 8 });
+  const [lakeQuery, setLakeQuery] = useState('');
+  // Android : les marqueurs à vue custom doivent être "suivis" le temps que leur
+  // bitmap se peigne, sinon le snapshot est capturé vide → pin invisible. On active
+  // brièvement le suivi quand l'ensemble des marqueurs change, puis on le coupe pour
+  // éviter la re-capture continue (fuite mémoire / ANR / OOM au zoom).
+  const [tracksChanges, setTracksChanges] = useState(true);
+
+  // ─── Zones partagées ───────────────────────────────────────────────────────
+  const [zones, setZones] = useState<SharedZone[]>([]);
+  const [mapSource, setMapSource] = useState<'mine' | string>('mine'); // 'mine' ou zoneId
+  const [zoneCatches, setZoneCatches] = useState<CatchPin[]>([]);
+  const [zoneLoading, setZoneLoading] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [draftPoints, setDraftPoints] = useState<ZonePoint[]>([]);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [zoneName, setZoneName] = useState('');
+  const [savingZone, setSavingZone] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joining, setJoining] = useState(false);
+
+  const myId = user?.id ?? cachedUserId;
+  const activeZone = mapSource !== 'mine' ? zones.find((z) => z.id === mapSource) ?? null : null;
+  const isOwnActiveZone = activeZone != null && activeZone.owner_id === myId;
 
   // ─── Chargement ────────────────────────────────────────────────────────────
 
@@ -221,27 +261,217 @@ export default function MapScreen() {
 
   useFocusEffect(useCallback(() => { loadCatches().catch(console.warn); }, [loadCatches]));
 
+  // ─── Chargement des zones ──────────────────────────────────────────────────
+
+  const refreshZones = useCallback(async () => {
+    if (!myId) return;
+    const loaded = await loadZones(myId);
+    setZones(loaded);
+    // La zone affichée a pu être supprimée / quittée → retour à ma carte
+    setMapSource((prev) => (prev === 'mine' || loaded.some((z) => z.id === prev) ? prev : 'mine'));
+  }, [myId]);
+
+  useFocusEffect(useCallback(() => { refreshZones().catch(console.warn); }, [refreshZones]));
+
+  // Charge les prises d'une zone reçue quand elle devient la source affichée
+  useEffect(() => {
+    if (!activeZone || isOwnActiveZone) { setZoneCatches([]); return; }
+    let cancelled = false;
+    (async () => {
+      setZoneLoading(true);
+      try {
+        const rows = await fetchZoneCatches(activeZone.id);
+        if (cancelled) return;
+        const valid = rows.filter(
+          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+        ) as unknown as CatchPin[];
+        setZoneCatches(valid);
+      } finally {
+        if (!cancelled) setZoneLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeZone?.id, isOwnActiveZone]);
+
+  // ─── Actions zones ─────────────────────────────────────────────────────────
+
+  const selectMapSource = (source: 'mine' | string) => {
+    setMapSource(source);
+    setSelectedCatch(null);
+    setOpenPanel(null);
+    if (source !== 'mine') {
+      const zone = zones.find((z) => z.id === source);
+      if (zone && zone.polygon.length > 0) {
+        const region = computeRegion(zone.polygon);
+        if (region) mapRef.current?.animateToRegion(region, 600);
+      }
+    }
+  };
+
+  const startDrawing = () => {
+    setOpenPanel(null);
+    setSelectedCatch(null);
+    setDraftPoints([]);
+    setDrawing(true);
+  };
+
+  const cancelDrawing = () => {
+    setDrawing(false);
+    setDraftPoints([]);
+    setZoneName('');
+    setShowNameModal(false);
+  };
+
+  const handleCreateZone = async () => {
+    const name = zoneName.trim();
+    if (!name || draftPoints.length < 3 || !myId || savingZone) return;
+    setSavingZone(true);
+    try {
+      const zone = await createZone(myId, name, draftPoints);
+      if (!zone) {
+        Alert.alert(t('common.error'), t('zones.offline'));
+        return;
+      }
+      setShowNameModal(false);
+      setDrawing(false);
+      setDraftPoints([]);
+      setZoneName('');
+      await refreshZones();
+      setMapSource(zone.id);
+      Alert.alert(t('zones.nameTitle'), t('zones.created', { name: zone.name, code: zone.invite_code }));
+    } finally {
+      setSavingZone(false);
+    }
+  };
+
+  const handleShareZone = async (zone: SharedZone) => {
+    try {
+      await Share.share({
+        message: t('zones.shareMessage', { name: zone.name, code: zone.invite_code }),
+      });
+    } catch {}
+  };
+
+  const handleDeleteZone = (zone: SharedZone) => {
+    Alert.alert(
+      t('zones.deleteConfirmTitle'),
+      t('zones.deleteConfirmBody', { name: zone.name }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: async () => {
+            const ok = await deleteZone(zone.id);
+            if (!ok) { Alert.alert(t('common.error'), t('zones.offline')); return; }
+            if (mapSource === zone.id) setMapSource('mine');
+            await refreshZones();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleLeaveZone = (zone: SharedZone) => {
+    if (!myId) return;
+    Alert.alert(
+      t('zones.leaveConfirmTitle'),
+      t('zones.leaveConfirmBody', { name: zone.name }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('zones.leave'),
+          style: 'destructive',
+          onPress: async () => {
+            const ok = await leaveZone(zone.id, myId);
+            if (!ok) { Alert.alert(t('common.error'), t('zones.offline')); return; }
+            if (mapSource === zone.id) setMapSource('mine');
+            await refreshZones();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleJoinZone = async () => {
+    const code = joinCode.trim();
+    if (!code || joining) return;
+    setJoining(true);
+    try {
+      const result = await redeemZoneCode(code);
+      if (!result.ok) {
+        const msg =
+          result.reason === 'invalid_code' ? t('zones.invalidCode')
+          : result.reason === 'own_zone' ? t('zones.ownZone')
+          : result.reason === 'offline' ? t('zones.offline')
+          : t('zones.error');
+        Alert.alert(t('common.error'), msg);
+        return;
+      }
+      setJoinCode('');
+      await refreshZones();
+      Alert.alert(t('zones.panelTitle'), t('zones.joined', { name: result.zoneName }));
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  // ─── Source affichée : ma carte ou une zone partagée ──────────────────────
+
+  const baseCatches = useMemo(() => {
+    if (!activeZone) return catches;
+    if (isOwnActiveZone) {
+      // Ma propre zone : filtrage local (fonctionne hors-ligne)
+      return catches.filter((c) =>
+        pointInPolygon({ latitude: c.latitude, longitude: c.longitude }, activeZone.polygon),
+      );
+    }
+    return zoneCatches;
+  }, [catches, activeZone, isOwnActiveZone, zoneCatches]);
+
   // ─── Listes dynamiques pour les filtres ────────────────────────────────────
 
   const lureList = useMemo(
-    () => Array.from(new Set(catches.map((c) => c.lure).filter(Boolean) as string[])).sort(),
-    [catches],
+    () => Array.from(new Set(baseCatches.map((c) => c.lure).filter(Boolean) as string[])).sort(),
+    [baseCatches],
   );
 
   const weatherList = useMemo(
-    () => Array.from(new Set(catches.map((c) => c.weather_conditions).filter(Boolean) as string[])).sort(),
-    [catches],
+    () => Array.from(new Set(baseCatches.map((c) => c.weather_conditions).filter(Boolean) as string[])).sort(),
+    [baseCatches],
   );
 
   const speciesList = useMemo(
-    () => Array.from(new Set(catches.map((c) => c.species))).sort(),
+    () => Array.from(new Set(baseCatches.map((c) => c.species))).sort(),
+    [baseCatches],
+  );
+
+  // ─── Recherche de lac (dans les prises de l'utilisateur, fonctionne hors-ligne) ─
+
+  const lakeList = useMemo(
+    () => Array.from(new Set(catches.map((c) => c.lake_name?.trim()).filter(Boolean) as string[])).sort(),
     [catches],
   );
+
+  const lakeMatches = useMemo(() => {
+    const q = lakeQuery.trim().toLowerCase();
+    if (!q) return lakeList.slice(0, 8);
+    return lakeList.filter((l) => l.toLowerCase().includes(q)).slice(0, 8);
+  }, [lakeList, lakeQuery]);
+
+  const goToLake = useCallback((lake: string) => {
+    const pins = catches.filter((c) => c.lake_name?.trim() === lake);
+    const region = computeRegion(pins);
+    if (region) mapRef.current?.animateToRegion(region, 600);
+    setOpenPanel(null);
+    setLakeQuery('');
+  }, [catches]);
 
   // ─── Filtrage ──────────────────────────────────────────────────────────────
 
   const visibleCatches = useMemo(() => {
-    let list = catches;
+    let list = baseCatches;
     if (filters.species.length > 0)
       list = list.filter((c) => filters.species.includes(c.species));
     if (filters.lures.length > 0)
@@ -255,7 +485,7 @@ export default function MapScreen() {
     if (filters.weather.length > 0)
       list = list.filter((c) => c.weather_conditions && filters.weather.includes(c.weather_conditions));
     return list;
-  }, [catches, filters]);
+  }, [baseCatches, filters]);
 
   const activeCount = countActiveFilters(filters);
 
@@ -264,13 +494,165 @@ export default function MapScreen() {
     [visibleCatches, mapDeltas],
   );
 
+  // Ré-arme le suivi des marqueurs quand l'ensemble affiché change, puis le coupe.
+  const clusterSig = useMemo(() => clusters.map((c) => c.id).join(','), [clusters]);
+  useEffect(() => {
+    setTracksChanges(true);
+    const t = setTimeout(() => setTracksChanges(false), 1000);
+    return () => clearTimeout(t);
+  }, [clusterSig]);
+
   // ─── Panneau de filtre ─────────────────────────────────────────────────────
 
   const FilterPanelContent = () => {
+    if (openPanel === 'search') {
+      return (
+        <View style={styles.panelSection}>
+          <Text style={styles.panelTitle}>{t('map.searchLake')}</Text>
+          <View style={styles.searchInputRow}>
+            <Ionicons name="search" size={16} color={colors.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              value={lakeQuery}
+              onChangeText={setLakeQuery}
+              placeholder={t('map.searchPlaceholder')}
+              placeholderTextColor={colors.textSubtle}
+              autoFocus
+              autoCorrect={false}
+            />
+            {lakeQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setLakeQuery('')} activeOpacity={0.7}>
+                <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
+          {lakeMatches.length === 0 ? (
+            <Text style={styles.panelEmpty}>{t('map.noLakeFound')}</Text>
+          ) : (
+            <View style={styles.panelChips}>
+              {lakeMatches.map((lake) => (
+                <TouchableOpacity
+                  key={lake}
+                  style={styles.pChip}
+                  onPress={() => goToLake(lake)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.pChipText}>📍 {lake}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    if (openPanel === 'zones') {
+      const myZones = zones.filter((z) => z.owner_id === myId);
+      const receivedZones = zones.filter((z) => z.owner_id !== myId);
+      return (
+        <View style={styles.panelSection}>
+          <Text style={styles.panelTitle}>{t('zones.displayedMap')}</Text>
+          <View style={styles.panelChips}>
+            <TouchableOpacity
+              style={[styles.pChip, mapSource === 'mine' && styles.pChipActive]}
+              onPress={() => selectMapSource('mine')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.pChipText, mapSource === 'mine' && styles.pChipTextActive]}>
+                🐟 {t('zones.myMap')}
+              </Text>
+            </TouchableOpacity>
+            {zones.map((z) => {
+              const active = mapSource === z.id;
+              const mine = z.owner_id === myId;
+              return (
+                <TouchableOpacity
+                  key={z.id}
+                  style={[styles.pChip, active && styles.pChipActive]}
+                  onPress={() => selectMapSource(z.id)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.pChipText, active && styles.pChipTextActive]}>
+                    {mine ? '📐' : '👥'} {z.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.panelTitle, { marginTop: 14 }]}>{t('zones.myZones')}</Text>
+          {myZones.length === 0 ? (
+            <Text style={styles.panelEmpty}>{t('zones.noZones')}</Text>
+          ) : (
+            myZones.map((z) => (
+              <View key={z.id} style={styles.zoneRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.zoneName} numberOfLines={1}>{z.name}</Text>
+                  <Text style={styles.zoneCode}>{t('zones.code', { code: z.invite_code })}</Text>
+                </View>
+                <TouchableOpacity style={styles.zoneActionBtn} onPress={() => handleShareZone(z)} activeOpacity={0.8}>
+                  <Ionicons name="share-social-outline" size={15} color={ACCENT} />
+                  <Text style={styles.zoneActionText}>{t('zones.share')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.zoneDeleteBtn} onPress={() => handleDeleteZone(z)} activeOpacity={0.8} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <Ionicons name="trash-outline" size={15} color="#E74C3C" />
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+          <TouchableOpacity style={styles.drawZoneBtn} onPress={startDrawing} activeOpacity={0.85}>
+            <Text style={styles.drawZoneBtnText}>{t('zones.draw')}</Text>
+          </TouchableOpacity>
+
+          {receivedZones.length > 0 && (
+            <>
+              <Text style={[styles.panelTitle, { marginTop: 14 }]}>{t('zones.received')}</Text>
+              {receivedZones.map((z) => (
+                <View key={z.id} style={styles.zoneRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.zoneName} numberOfLines={1}>👥 {z.name}</Text>
+                  </View>
+                  <TouchableOpacity style={styles.zoneActionBtn} onPress={() => handleLeaveZone(z)} activeOpacity={0.8}>
+                    <Ionicons name="exit-outline" size={15} color="#E74C3C" />
+                    <Text style={[styles.zoneActionText, { color: '#E74C3C' }]}>{t('zones.leave')}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </>
+          )}
+
+          <Text style={[styles.panelTitle, { marginTop: 14 }]}>{t('zones.join')}</Text>
+          <View style={styles.joinRow}>
+            <TextInput
+              style={styles.joinInput}
+              value={joinCode}
+              onChangeText={setJoinCode}
+              placeholder={t('zones.codePlaceholder')}
+              placeholderTextColor={colors.textSubtle}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity
+              style={[styles.joinBtn, (!joinCode.trim() || joining) && { opacity: 0.5 }]}
+              onPress={handleJoinZone}
+              disabled={!joinCode.trim() || joining}
+              activeOpacity={0.85}
+            >
+              {joining ? (
+                <ActivityIndicator size="small" color={colors.bg} />
+              ) : (
+                <Text style={styles.joinBtnText}>{t('zones.joinBtn')}</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+
     if (openPanel === 'species') {
       return (
         <View style={styles.panelSection}>
-          <Text style={styles.panelTitle}>Espèce</Text>
+          <Text style={styles.panelTitle}>{t('map.species')}</Text>
           <View style={styles.panelChips}>
             {speciesList.map((s) => {
               const active = filters.species.includes(s);
@@ -294,9 +676,9 @@ export default function MapScreen() {
     if (openPanel === 'lure') {
       return (
         <View style={styles.panelSection}>
-          <Text style={styles.panelTitle}>Leurre</Text>
+          <Text style={styles.panelTitle}>{t('map.lure')}</Text>
           {lureList.length === 0 ? (
-            <Text style={styles.panelEmpty}>Aucun leurre enregistré</Text>
+            <Text style={styles.panelEmpty}>{t('map.noLures')}</Text>
           ) : (
             <View style={styles.panelChips}>
               {lureList.map((l) => {
@@ -321,16 +703,16 @@ export default function MapScreen() {
     if (openPanel === 'dates') {
       return (
         <View style={styles.panelSection}>
-          <Text style={styles.panelTitle}>Plage de dates</Text>
+          <Text style={styles.panelTitle}>{t('map.dateRange')}</Text>
           <View style={styles.dateRow}>
             <TouchableOpacity
               style={[styles.dateBtn, filters.dateFrom && styles.dateBtnActive]}
               onPress={() => setShowDatePicker('from')}
               activeOpacity={0.8}
             >
-              <Text style={styles.dateBtnLabel}>Du</Text>
+              <Text style={styles.dateBtnLabel}>{t('map.from')}</Text>
               <Text style={[styles.dateBtnValue, filters.dateFrom && styles.dateBtnValueActive]}>
-                {filters.dateFrom ? formatShortDate(filters.dateFrom) : 'Début'}
+                {filters.dateFrom ? formatShortDate(filters.dateFrom, locale) : t('map.start')}
               </Text>
             </TouchableOpacity>
             <Text style={styles.dateSep}>→</Text>
@@ -339,9 +721,9 @@ export default function MapScreen() {
               onPress={() => setShowDatePicker('to')}
               activeOpacity={0.8}
             >
-              <Text style={styles.dateBtnLabel}>Au</Text>
+              <Text style={styles.dateBtnLabel}>{t('map.to')}</Text>
               <Text style={[styles.dateBtnValue, filters.dateTo && styles.dateBtnValueActive]}>
-                {filters.dateTo ? formatShortDate(filters.dateTo) : 'Fin'}
+                {filters.dateTo ? formatShortDate(filters.dateTo, locale) : t('map.end')}
               </Text>
             </TouchableOpacity>
             {(filters.dateFrom || filters.dateTo) && (
@@ -375,7 +757,7 @@ export default function MapScreen() {
       const list = weatherList.length > 0 ? weatherList : WEATHER_OPTIONS;
       return (
         <View style={styles.panelSection}>
-          <Text style={styles.panelTitle}>Météo</Text>
+          <Text style={styles.panelTitle}>{t('map.weather')}</Text>
           <View style={styles.panelChips}>
             {list.map((w) => {
               const active = filters.weather.includes(w);
@@ -410,9 +792,45 @@ export default function MapScreen() {
         initialRegion={{ latitude: 47.5, longitude: -71.5, latitudeDelta: 8, longitudeDelta: 8 }}
         showsUserLocation
         showsMyLocationButton
-        onPress={() => setSelectedCatch(null)}
+        onPress={(e) => {
+          if (drawing) {
+            const { latitude, longitude } = e.nativeEvent.coordinate;
+            setDraftPoints((prev) => [...prev, { latitude, longitude }]);
+          } else {
+            setSelectedCatch(null);
+          }
+        }}
         onRegionChangeComplete={(r) => setMapDeltas({ lat: r.latitudeDelta, lng: r.longitudeDelta })}
       >
+        {/* Polygone de la zone affichée */}
+        {activeZone && activeZone.polygon.length >= 3 && (
+          <Polygon
+            coordinates={activeZone.polygon}
+            strokeColor={ACCENT}
+            strokeWidth={2}
+            fillColor="rgba(0,230,181,0.08)"
+          />
+        )}
+
+        {/* Polygone en cours de dessin */}
+        {drawing && draftPoints.length >= 2 && (
+          <Polygon
+            coordinates={draftPoints}
+            strokeColor={ACCENT}
+            strokeWidth={2}
+            fillColor="rgba(0,230,181,0.15)"
+          />
+        )}
+        {drawing && draftPoints.map((p, idx) => (
+          <Marker
+            key={`draft-${idx}`}
+            coordinate={p}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={true}
+          >
+            <View style={styles.draftVertex} />
+          </Marker>
+        ))}
         {clusters.map((cluster) => {
           const isCluster = cluster.catches.length > 1;
           const singleCatch = cluster.catches[0];
@@ -423,9 +841,9 @@ export default function MapScreen() {
                 key={cluster.id}
                 coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
                 anchor={{ x: 0.5, y: 1 }}
-                // Android : sans ce flag, chaque marqueur à vue custom est re-capturé
-                // en continu → fuite mémoire / ANR / crash OOM en zoomant-dézoomant
-                tracksViewChanges={false}
+                // Android : true brièvement (le temps de peindre le bitmap) puis false
+                // au repos pour éviter la re-capture continue (fuite mémoire / ANR / OOM)
+                tracksViewChanges={tracksChanges}
                 onPress={(e) => { e.stopPropagation(); setSelectedCatch(singleCatch); setOpenPanel(null); }}
               >
                 <View style={styles.pinContainer}>
@@ -451,7 +869,7 @@ export default function MapScreen() {
               key={cluster.id}
               coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
               anchor={{ x: 0.5, y: 0.5 }}
-              tracksViewChanges={false}
+              tracksViewChanges={tracksChanges}
               onPress={(e) => {
                 e.stopPropagation();
                 setSelectedCatch(null);
@@ -488,11 +906,16 @@ export default function MapScreen() {
         })}
       </MapView>
 
-      {/* Callout personnalisé (fonctionne sur Android + iOS) */}
+      {/* Callout personnalisé (fonctionne sur Android + iOS).
+          Zone reçue : pas de navigation vers le détail (prise d'un autre utilisateur). */}
       {selectedCatch && (
         <TouchableOpacity
           style={styles.customCallout}
-          onPress={() => { setSelectedCatch(null); router.push(`/catch-detail?id=${selectedCatch.id}`); }}
+          onPress={() => {
+            if (activeZone && !isOwnActiveZone) return;
+            setSelectedCatch(null);
+            router.push(`/catch-detail?id=${selectedCatch.id}`);
+          }}
           activeOpacity={0.92}
         >
           <View style={styles.calloutInner}>
@@ -502,13 +925,15 @@ export default function MapScreen() {
               {!!selectedCatch.lake_name && <Text style={styles.calloutRow}>📍 {selectedCatch.lake_name}</Text>}
               {!!selectedCatch.lure && <Text style={styles.calloutRow}>🪝 {selectedCatch.lure}</Text>}
               {selectedCatch.weight_lbs != null && (
-                <Text style={styles.calloutRow}>⚖️ {selectedCatch.weight_lbs.toFixed(1)} lb</Text>
+                <Text style={styles.calloutRow}>⚖️ {fmtWeight(selectedCatch.weight_lbs)}</Text>
               )}
-              <Text style={styles.calloutDate}>{formatDateFr(selectedCatch.caught_at)}</Text>
+              <Text style={styles.calloutDate}>{formatDate(selectedCatch.caught_at, locale)}</Text>
             </View>
-            <View style={styles.calloutArrow}>
-              <Text style={styles.calloutLink}>→</Text>
-            </View>
+            {(!activeZone || isOwnActiveZone) && (
+              <View style={styles.calloutArrow}>
+                <Text style={styles.calloutLink}>→</Text>
+              </View>
+            )}
           </View>
         </TouchableOpacity>
       )}
@@ -517,18 +942,41 @@ export default function MapScreen() {
       {fromCache && (
         <View style={styles.cacheNotice}>
           <Ionicons name="cloud-offline-outline" size={12} color={colors.warning} />
-          <Text style={styles.cacheNoticeText}>Données locales</Text>
+          <Text style={styles.cacheNoticeText}>{t('home.localData')}</Text>
         </View>
       )}
 
       {/* Bouton satellite */}
       <TouchableOpacity style={styles.satelliteBtn} onPress={() => setSatellite((v) => !v)} activeOpacity={0.85}>
-        <Text style={styles.satelliteBtnText}>{satellite ? '🗺 Carte' : '🛰 Satellite'}</Text>
+        <Text style={styles.satelliteBtnText}>{satellite ? t('map.standard') : t('map.satellite')}</Text>
       </TouchableOpacity>
 
-      {/* Barre de filtres */}
+      {/* Barre de filtres (masquée en mode dessin) */}
+      {!drawing && (
       <View style={[styles.filterBar, { top: insets.top }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+
+          {/* Bouton Recherche de lac */}
+          <TouchableOpacity
+            style={[styles.filterBtn, openPanel === 'search' && styles.filterBtnActive]}
+            onPress={() => setOpenPanel((p) => p === 'search' ? null : 'search')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.filterBtnText, openPanel === 'search' && styles.filterBtnTextActive]}>
+              🔍 {t('map.searchLake')}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Bouton Zones partagées */}
+          <TouchableOpacity
+            style={[styles.filterBtn, (openPanel === 'zones' || mapSource !== 'mine') && styles.filterBtnActive]}
+            onPress={() => setOpenPanel((p) => p === 'zones' ? null : 'zones')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.filterBtnText, (openPanel === 'zones' || mapSource !== 'mine') && styles.filterBtnTextActive]}>
+              📐 {t('zones.button')}{activeZone ? ` · ${activeZone.name}` : ''}
+            </Text>
+          </TouchableOpacity>
 
           {/* Bouton Espèce */}
           <TouchableOpacity
@@ -537,7 +985,7 @@ export default function MapScreen() {
             activeOpacity={0.8}
           >
             <Text style={[styles.filterBtnText, (openPanel === 'species' || filters.species.length > 0) && styles.filterBtnTextActive]}>
-              🐟 Espèce{filters.species.length > 0 ? ` (${filters.species.length})` : ''}
+              🐟 {t('map.species')}{filters.species.length > 0 ? ` (${filters.species.length})` : ''}
             </Text>
           </TouchableOpacity>
 
@@ -548,7 +996,7 @@ export default function MapScreen() {
             activeOpacity={0.8}
           >
             <Text style={[styles.filterBtnText, (openPanel === 'lure' || filters.lures.length > 0) && styles.filterBtnTextActive]}>
-              🪝 Leurre{filters.lures.length > 0 ? ` (${filters.lures.length})` : ''}
+              🪝 {t('map.lure')}{filters.lures.length > 0 ? ` (${filters.lures.length})` : ''}
             </Text>
           </TouchableOpacity>
 
@@ -560,8 +1008,8 @@ export default function MapScreen() {
           >
             <Text style={[styles.filterBtnText, (openPanel === 'dates' || filters.dateFrom || filters.dateTo) && styles.filterBtnTextActive]}>
               {filters.dateFrom || filters.dateTo
-                ? `📅 ${filters.dateFrom ? formatShortDate(filters.dateFrom) : '…'} → ${filters.dateTo ? formatShortDate(filters.dateTo) : '…'}`
-                : '📅 Dates'}
+                ? `📅 ${filters.dateFrom ? formatShortDate(filters.dateFrom, locale) : '…'} → ${filters.dateTo ? formatShortDate(filters.dateTo, locale) : '…'}`
+                : `📅 ${t('map.dates')}`}
             </Text>
           </TouchableOpacity>
 
@@ -572,7 +1020,7 @@ export default function MapScreen() {
             activeOpacity={0.8}
           >
             <Text style={[styles.filterBtnText, (openPanel === 'weather' || filters.weather.length > 0) && styles.filterBtnTextActive]}>
-              ☀️ Météo{filters.weather.length > 0 ? ` (${filters.weather.length})` : ''}
+              ☀️ {t('map.weather')}{filters.weather.length > 0 ? ` (${filters.weather.length})` : ''}
             </Text>
           </TouchableOpacity>
 
@@ -583,7 +1031,7 @@ export default function MapScreen() {
               onPress={() => { setFilters(EMPTY_FILTERS); setOpenPanel(null); }}
               activeOpacity={0.8}
             >
-              <Text style={styles.resetBtnText}>✕ Réinitialiser</Text>
+              <Text style={styles.resetBtnText}>✕ {t('map.reset')}</Text>
             </TouchableOpacity>
           )}
         </ScrollView>
@@ -591,15 +1039,102 @@ export default function MapScreen() {
         {/* Panneau d'options (sous la barre) */}
         {openPanel && (
           <View style={styles.panel}>
-            <FilterPanelContent />
+            {FilterPanelContent()}
           </View>
         )}
       </View>
+      )}
+
+      {/* Bandeau zone partagée affichée */}
+      {activeZone && !drawing && (
+        <View style={[styles.zoneBadge, { top: insets.top + 54 }]}>
+          {zoneLoading ? (
+            <ActivityIndicator size="small" color={ACCENT} />
+          ) : (
+            <Ionicons name={isOwnActiveZone ? 'create-outline' : 'people-outline'} size={13} color={ACCENT} />
+          )}
+          <Text style={styles.zoneBadgeText} numberOfLines={1}>
+            {t('zones.sharedBadge', { name: activeZone.name })}
+          </Text>
+          <TouchableOpacity onPress={() => selectMapSource('mine')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Barre d'outils du mode dessin */}
+      {drawing && (
+        <View style={[styles.drawToolbar, { bottom: 24 }]}>
+          <Text style={styles.drawHint}>
+            {draftPoints.length < 3
+              ? t('zones.drawMin')
+              : t('zones.drawHint', { n: draftPoints.length })}
+          </Text>
+          <View style={styles.drawButtonsRow}>
+            <TouchableOpacity style={styles.drawCancelBtn} onPress={cancelDrawing} activeOpacity={0.8}>
+              <Text style={styles.drawCancelText}>{t('common.cancel')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.drawUndoBtn, draftPoints.length === 0 && { opacity: 0.4 }]}
+              onPress={() => setDraftPoints((prev) => prev.slice(0, -1))}
+              disabled={draftPoints.length === 0}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="arrow-undo-outline" size={15} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.drawFinishBtn, draftPoints.length < 3 && { opacity: 0.4 }]}
+              onPress={() => setShowNameModal(true)}
+              disabled={draftPoints.length < 3}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.drawFinishText}>✓ {t('zones.finish')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Modal nom de la zone */}
+      <Modal visible={showNameModal} transparent animationType="fade" onRequestClose={() => setShowNameModal(false)}>
+        <Pressable style={styles.nameModalOverlay} onPress={() => setShowNameModal(false)}>
+          <Pressable style={styles.nameModalCard} onPress={() => {}}>
+            <Text style={styles.nameModalTitle}>{t('zones.nameTitle')}</Text>
+            <TextInput
+              style={styles.nameModalInput}
+              value={zoneName}
+              onChangeText={setZoneName}
+              placeholder={t('zones.namePlaceholder')}
+              placeholderTextColor={colors.textSubtle}
+              autoFocus
+              maxLength={50}
+            />
+            <View style={styles.nameModalRow}>
+              <TouchableOpacity style={styles.nameModalCancel} onPress={() => setShowNameModal(false)} activeOpacity={0.8}>
+                <Text style={styles.drawCancelText}>{t('common.cancel')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.nameModalCreate, (!zoneName.trim() || savingZone) && { opacity: 0.5 }]}
+                onPress={handleCreateZone}
+                disabled={!zoneName.trim() || savingZone}
+                activeOpacity={0.85}
+              >
+                {savingZone ? (
+                  <ActivityIndicator size="small" color={colors.bg} />
+                ) : (
+                  <Text style={styles.drawFinishText}>{t('zones.create')}</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Compteur de résultats */}
       {activeCount > 0 && (
         <View style={styles.resultBadge}>
-          <Text style={styles.resultBadgeText}>{visibleCatches.length} résultat{visibleCatches.length !== 1 ? 's' : ''}</Text>
+          <Text style={styles.resultBadgeText}>
+            {t(visibleCatches.length === 1 ? 'map.result1' : 'map.resultN', { n: visibleCatches.length })}
+          </Text>
         </View>
       )}
 
@@ -611,15 +1146,17 @@ export default function MapScreen() {
       )}
 
       {/* Empty state */}
-      {!loading && visibleCatches.length === 0 && (
+      {!loading && !drawing && !zoneLoading && visibleCatches.length === 0 && (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>
-            {activeCount > 0 ? 'Aucun résultat pour ces filtres' : 'Aucune prise sur la carte'}
+            {activeCount > 0
+              ? t('map.emptyFiltered')
+              : activeZone
+                ? t('zones.zoneEmpty')
+                : t('map.empty')}
           </Text>
           <Text style={styles.emptySubtitle}>
-            {activeCount > 0
-              ? 'Essaie de modifier ou réinitialiser les filtres.'
-              : 'Tes prises apparaîtront ici une fois enregistrées avec GPS.'}
+            {activeCount > 0 ? t('map.emptyFilteredSub') : activeZone ? '' : t('map.emptySub')}
           </Text>
         </View>
       )}
@@ -814,6 +1351,245 @@ const styles = StyleSheet.create({
   },
   panelChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   panelEmpty: { fontSize: 13, color: colors.textSubtle, fontStyle: 'italic' },
+  searchInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.bg,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.textPrimary,
+    padding: 0,
+  },
+
+  // ── Zones partagées ──
+  draftVertex: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: ACCENT,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  zoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  zoneName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  zoneCode: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 1,
+  },
+  zoneActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+  },
+  zoneActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  zoneDeleteBtn: {
+    padding: 6,
+  },
+  drawZoneBtn: {
+    marginTop: 10,
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: ACCENT,
+    backgroundColor: 'rgba(0,230,181,0.10)',
+  },
+  drawZoneBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: ACCENT,
+  },
+  joinRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  joinInput: {
+    flex: 1,
+    backgroundColor: colors.bg,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: colors.textPrimary,
+  },
+  joinBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  joinBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.bg,
+  },
+  zoneBadge: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: CARD_BG,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(0,230,181,0.35)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    zIndex: 15,
+  },
+  zoneBadgeText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  drawToolbar: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    backgroundColor: CARD_BG,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 12,
+    gap: 10,
+    zIndex: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  drawHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
+  drawButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  drawCancelBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  drawCancelText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  drawUndoBtn: {
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  drawFinishBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: ACCENT,
+  },
+  drawFinishText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.bg,
+  },
+  nameModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  nameModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: CARD_BG,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 18,
+    gap: 12,
+  },
+  nameModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  nameModalInput: {
+    backgroundColor: colors.bg,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.textPrimary,
+  },
+  nameModalRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  nameModalCancel: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  nameModalCreate: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: ACCENT,
+  },
   pChip: {
     flexDirection: 'row',
     alignItems: 'center',

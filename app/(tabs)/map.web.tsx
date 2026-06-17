@@ -4,10 +4,22 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
+import {
+  createZone,
+  deleteZone,
+  fetchZoneCatches,
+  leaveZone,
+  loadZones,
+  pointInPolygon,
+  redeemZoneCode,
+  type SharedZone,
+  type ZonePoint,
+} from '@/lib/zones';
 import { colors } from '@/lib/theme';
 
 // ─── Leaflet (web uniquement) ─────────────────────────────────────────────────
@@ -16,6 +28,8 @@ let TileLayer: any = null;
 let Marker: any = null;
 let Popup: any = null;
 let useMap: any = null;
+let Polygon: any = null;
+let CircleMarker: any = null;
 
 if (typeof window !== 'undefined') {
   const RL = require('react-leaflet');
@@ -24,6 +38,8 @@ if (typeof window !== 'undefined') {
   Marker = RL.Marker;
   Popup = RL.Popup;
   useMap = RL.useMap;
+  Polygon = RL.Polygon;
+  CircleMarker = RL.CircleMarker;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,7 +64,7 @@ type FilterState = {
   weather: string[];
 };
 
-type FilterPanel = 'species' | 'lure' | 'dates' | 'weather' | null;
+type FilterPanel = 'search' | 'zones' | 'species' | 'lure' | 'dates' | 'weather' | null;
 
 type Cluster = {
   id: string;
@@ -77,8 +93,8 @@ const TILES = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatDateFr(iso: string): string {
-  return new Date(iso).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' });
+function formatDate(iso: string, locale: string): string {
+  return new Date(iso).toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function countActiveFilters(f: FilterState): number {
@@ -203,6 +219,7 @@ function MapController({ catches, onBoundsChange, mapRef }: {
 export default function MapScreen() {
   const router = useRouter();
   const { user, cachedUserId } = useAuth();
+  const { t, locale, fmtWeight } = useSettings();
   const isConnected = useNetworkStatus();
 
   const { getColor } = useSpeciesColors();
@@ -217,6 +234,24 @@ export default function MapScreen() {
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [openPanel, setOpenPanel] = useState<FilterPanel>(null);
   const [mapBounds, setMapBounds] = useState({ lat: 12, lng: 20 });
+  const [lakeQuery, setLakeQuery] = useState('');
+
+  // ─── Zones partagées ───────────────────────────────────────────────────────
+  const [zones, setZones] = useState<SharedZone[]>([]);
+  const [mapSource, setMapSource] = useState<'mine' | string>('mine');
+  const [zoneCatches, setZoneCatches] = useState<CatchPin[]>([]);
+  const [zoneLoading, setZoneLoading] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [draftPoints, setDraftPoints] = useState<ZonePoint[]>([]);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [zoneName, setZoneName] = useState('');
+  const [savingZone, setSavingZone] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joining, setJoining] = useState(false);
+
+  const myId = user?.id ?? cachedUserId;
+  const activeZone = mapSource !== 'mine' ? zones.find((z) => z.id === mapSource) ?? null : null;
+  const isOwnActiveZone = activeZone != null && activeZone.owner_id === myId;
 
   // ─── CSS Leaflet ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -278,21 +313,199 @@ export default function MapScreen() {
 
   useFocusEffect(useCallback(() => { loadCatches().catch(console.warn); }, [loadCatches]));
 
+  // ─── Zones : chargement + dessin (clic sur la carte Leaflet) ──────────────
+
+  const refreshZones = useCallback(async () => {
+    if (!myId) return;
+    const loaded = await loadZones(myId);
+    setZones(loaded);
+    setMapSource((prev) => (prev === 'mine' || loaded.some((z) => z.id === prev) ? prev : 'mine'));
+  }, [myId]);
+
+  useFocusEffect(useCallback(() => { refreshZones().catch(console.warn); }, [refreshZones]));
+
+  useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map || !drawing) return;
+    const handler = (e: any) => {
+      setDraftPoints((prev) => [...prev, { latitude: e.latlng.lat, longitude: e.latlng.lng }]);
+    };
+    map.on('click', handler);
+    return () => { map.off('click', handler); };
+  }, [drawing]);
+
+  // Prises d'une zone reçue
+  useEffect(() => {
+    if (!activeZone || isOwnActiveZone) { setZoneCatches([]); return; }
+    let cancelled = false;
+    (async () => {
+      setZoneLoading(true);
+      try {
+        const rows = await fetchZoneCatches(activeZone.id);
+        if (cancelled) return;
+        setZoneCatches(rows.filter(
+          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+        ) as unknown as CatchPin[]);
+      } finally {
+        if (!cancelled) setZoneLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeZone?.id, isOwnActiveZone]);
+
+  // ─── Actions zones (web : window.confirm / clipboard) ─────────────────────
+
+  const selectMapSource = (source: 'mine' | string) => {
+    setMapSource(source);
+    setOpenPanel(null);
+    if (source !== 'mine') {
+      const zone = zones.find((z) => z.id === source);
+      if (zone && zone.polygon.length > 0 && leafletMapRef.current) {
+        const L = require('leaflet');
+        leafletMapRef.current.fitBounds(
+          L.latLngBounds(zone.polygon.map((p) => [p.latitude, p.longitude])),
+          { padding: [60, 60] },
+        );
+      }
+    }
+  };
+
+  const startDrawing = () => {
+    setOpenPanel(null);
+    setDraftPoints([]);
+    setDrawing(true);
+  };
+
+  const cancelDrawing = () => {
+    setDrawing(false);
+    setDraftPoints([]);
+    setZoneName('');
+    setShowNameModal(false);
+  };
+
+  const handleCreateZone = async () => {
+    const name = zoneName.trim();
+    if (!name || draftPoints.length < 3 || !myId || savingZone) return;
+    setSavingZone(true);
+    try {
+      const zone = await createZone(myId, name, draftPoints);
+      if (!zone) { window.alert(t('zones.offline')); return; }
+      setShowNameModal(false);
+      setDrawing(false);
+      setDraftPoints([]);
+      setZoneName('');
+      await refreshZones();
+      setMapSource(zone.id);
+      window.alert(t('zones.created', { name: zone.name, code: zone.invite_code }));
+    } finally {
+      setSavingZone(false);
+    }
+  };
+
+  const handleShareZone = async (zone: SharedZone) => {
+    const message = t('zones.shareMessage', { name: zone.name, code: zone.invite_code });
+    try {
+      if (navigator.share) {
+        await navigator.share({ text: message });
+      } else {
+        await navigator.clipboard.writeText(message);
+        window.alert(message);
+      }
+    } catch {}
+  };
+
+  const handleDeleteZone = async (zone: SharedZone) => {
+    if (!window.confirm(t('zones.deleteConfirmBody', { name: zone.name }))) return;
+    const ok = await deleteZone(zone.id);
+    if (!ok) { window.alert(t('zones.offline')); return; }
+    if (mapSource === zone.id) setMapSource('mine');
+    await refreshZones();
+  };
+
+  const handleLeaveZone = async (zone: SharedZone) => {
+    if (!myId) return;
+    if (!window.confirm(t('zones.leaveConfirmBody', { name: zone.name }))) return;
+    const ok = await leaveZone(zone.id, myId);
+    if (!ok) { window.alert(t('zones.offline')); return; }
+    if (mapSource === zone.id) setMapSource('mine');
+    await refreshZones();
+  };
+
+  const handleJoinZone = async () => {
+    const code = joinCode.trim();
+    if (!code || joining) return;
+    setJoining(true);
+    try {
+      const result = await redeemZoneCode(code);
+      if (!result.ok) {
+        const msg =
+          result.reason === 'invalid_code' ? t('zones.invalidCode')
+          : result.reason === 'own_zone' ? t('zones.ownZone')
+          : result.reason === 'offline' ? t('zones.offline')
+          : t('zones.error');
+        window.alert(msg);
+        return;
+      }
+      setJoinCode('');
+      await refreshZones();
+      window.alert(t('zones.joined', { name: result.zoneName }));
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  // ─── Source affichée : ma carte ou une zone partagée ──────────────────────
+  const baseCatches = useMemo(() => {
+    if (!activeZone) return catches;
+    if (isOwnActiveZone) {
+      return catches.filter((c) =>
+        pointInPolygon({ latitude: c.latitude, longitude: c.longitude }, activeZone.polygon),
+      );
+    }
+    return zoneCatches;
+  }, [catches, activeZone, isOwnActiveZone, zoneCatches]);
+
   // ─── Listes dynamiques ──────────────────────────────────────────────────────
-  const speciesList = useMemo(() => Array.from(new Set(catches.map((c) => c.species))).sort(), [catches]);
-  const lureList = useMemo(() => Array.from(new Set(catches.map((c) => c.lure).filter(Boolean) as string[])).sort(), [catches]);
-  const weatherList = useMemo(() => Array.from(new Set(catches.map((c) => c.weather_conditions).filter(Boolean) as string[])).sort(), [catches]);
+  const speciesList = useMemo(() => Array.from(new Set(baseCatches.map((c) => c.species))).sort(), [baseCatches]);
+  const lureList = useMemo(() => Array.from(new Set(baseCatches.map((c) => c.lure).filter(Boolean) as string[])).sort(), [baseCatches]);
+  const weatherList = useMemo(() => Array.from(new Set(baseCatches.map((c) => c.weather_conditions).filter(Boolean) as string[])).sort(), [baseCatches]);
+
+  // ─── Recherche de lac (dans les prises de l'utilisateur, fonctionne hors-ligne) ─
+  const lakeList = useMemo(
+    () => Array.from(new Set(catches.map((c) => c.lake_name?.trim()).filter(Boolean) as string[])).sort(),
+    [catches],
+  );
+
+  const lakeMatches = useMemo(() => {
+    const q = lakeQuery.trim().toLowerCase();
+    if (!q) return lakeList.slice(0, 8);
+    return lakeList.filter((l) => l.toLowerCase().includes(q)).slice(0, 8);
+  }, [lakeList, lakeQuery]);
+
+  const goToLake = useCallback((lake: string) => {
+    const pins = catches.filter((c) => c.lake_name?.trim() === lake);
+    if (pins.length > 0 && leafletMapRef.current) {
+      const L = require('leaflet');
+      leafletMapRef.current.fitBounds(
+        L.latLngBounds(pins.map((p) => [p.latitude, p.longitude])),
+        { padding: [60, 60] },
+      );
+    }
+    setOpenPanel(null);
+    setLakeQuery('');
+  }, [catches]);
 
   // ─── Filtrage ───────────────────────────────────────────────────────────────
   const visibleCatches = useMemo(() => {
-    let list = catches;
+    let list = baseCatches;
     if (filters.species.length > 0) list = list.filter((c) => filters.species.includes(c.species));
     if (filters.lures.length > 0) list = list.filter((c) => c.lure && filters.lures.includes(c.lure));
     if (filters.dateFrom) list = list.filter((c) => c.caught_at >= filters.dateFrom! + 'T00:00:00');
     if (filters.dateTo) list = list.filter((c) => c.caught_at <= filters.dateTo! + 'T23:59:59');
     if (filters.weather.length > 0) list = list.filter((c) => c.weather_conditions && filters.weather.includes(c.weather_conditions));
     return list;
-  }, [catches, filters]);
+  }, [baseCatches, filters]);
 
   const activeCount = countActiveFilters(filters);
 
@@ -324,7 +537,7 @@ export default function MapScreen() {
     } else if (openPanel === 'lure') {
       items = lureList.length > 0
         ? lureList.map((l) => ({ key: l, label: `🪝 ${l}` }))
-        : [{ key: '__empty__', label: 'Aucun leurre enregistré' }];
+        : [{ key: '__empty__', label: t('map.noLures') }];
       onToggle = (l) => l !== '__empty__' && setFilters((f) => ({ ...f, lures: toggleItem(f.lures, l) }));
       isActive = (l) => filters.lures.includes(l);
     } else if (openPanel === 'dates') {
@@ -343,15 +556,165 @@ export default function MapScreen() {
       padding: '12px 14px 14px',
     };
 
+    if (openPanel === 'zones') {
+      const myZones = zones.filter((z) => z.owner_id === myId);
+      const receivedZones = zones.filter((z) => z.owner_id !== myId);
+      const sectionTitle: React.CSSProperties = {
+        fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.45)',
+        textTransform: 'uppercase', letterSpacing: '0.8px', margin: '12px 0 8px',
+      };
+      const chipStyle = (active: boolean): React.CSSProperties => ({
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '6px 12px', borderRadius: 20, cursor: 'pointer',
+        fontSize: 13, fontWeight: active ? 600 : 500,
+        color: active ? ACCENT : 'rgba(255,255,255,0.7)',
+        background: active ? 'rgba(0,230,181,0.12)' : 'rgba(255,255,255,0.06)',
+        border: `1px solid ${active ? ACCENT : 'rgba(255,255,255,0.15)'}`,
+      });
+      const smallBtn: React.CSSProperties = {
+        padding: '5px 10px', borderRadius: 14, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+        color: ACCENT, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.18)',
+      };
+      return (
+        <div style={{ ...panelStyle, maxHeight: '70vh', overflowY: 'auto' }}>
+          <div style={{ ...sectionTitle, marginTop: 0 }}>{t('zones.displayedMap')}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <button style={chipStyle(mapSource === 'mine')} onClick={() => selectMapSource('mine')}>
+              🐟 {t('zones.myMap')}
+            </button>
+            {zones.map((z) => (
+              <button key={z.id} style={chipStyle(mapSource === z.id)} onClick={() => selectMapSource(z.id)}>
+                {z.owner_id === myId ? '📐' : '👥'} {z.name}
+              </button>
+            ))}
+          </div>
+
+          <div style={sectionTitle}>{t('zones.myZones')}</div>
+          {myZones.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.45)', fontStyle: 'italic' }}>
+              {t('zones.noZones')}
+            </div>
+          ) : (
+            myZones.map((z) => (
+              <div key={z.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{z.name}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>{t('zones.code', { code: z.invite_code })}</div>
+                </div>
+                <button style={smallBtn} onClick={() => handleShareZone(z)}>📤 {t('zones.share')}</button>
+                <button style={{ ...smallBtn, color: '#E74C3C' }} onClick={() => handleDeleteZone(z)}>🗑</button>
+              </div>
+            ))
+          )}
+          <button
+            style={{
+              marginTop: 10, width: '100%', padding: '9px 0', borderRadius: 10, cursor: 'pointer',
+              fontSize: 13, fontWeight: 600, color: ACCENT,
+              background: 'rgba(0,230,181,0.10)', border: `1px solid ${ACCENT}`,
+            }}
+            onClick={startDrawing}
+          >
+            {t('zones.draw')}
+          </button>
+
+          {receivedZones.length > 0 && (
+            <>
+              <div style={sectionTitle}>{t('zones.received')}</div>
+              {receivedZones.map((z) => (
+                <div key={z.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div style={{ flex: 1, fontSize: 14, fontWeight: 600, color: '#fff' }}>👥 {z.name}</div>
+                  <button style={{ ...smallBtn, color: '#E74C3C' }} onClick={() => handleLeaveZone(z)}>
+                    {t('zones.leave')}
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+
+          <div style={sectionTitle}>{t('zones.join')}</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              placeholder={t('zones.codePlaceholder')}
+              style={{
+                flex: 1, background: 'rgba(255,255,255,0.08)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8,
+                padding: '8px 12px', fontSize: 13, outline: 'none',
+              }}
+            />
+            <button
+              style={{
+                padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                color: '#06141F', background: ACCENT, border: 'none',
+                opacity: !joinCode.trim() || joining ? 0.5 : 1,
+              }}
+              disabled={!joinCode.trim() || joining}
+              onClick={handleJoinZone}
+            >
+              {joining ? '…' : t('zones.joinBtn')}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (openPanel === 'search') {
+      return (
+        <div style={panelStyle}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 10 }}>
+            {t('map.searchLake')}
+          </div>
+          <input
+            type="text"
+            value={lakeQuery}
+            onChange={(e) => setLakeQuery(e.target.value)}
+            placeholder={t('map.searchPlaceholder')}
+            autoFocus
+            style={{
+              width: '100%', maxWidth: 320, boxSizing: 'border-box',
+              background: 'rgba(255,255,255,0.08)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8,
+              padding: '8px 12px', fontSize: 13, outline: 'none', marginBottom: 10,
+            }}
+          />
+          {lakeMatches.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.45)', fontStyle: 'italic' }}>
+              {t('map.noLakeFound')}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {lakeMatches.map((lake) => (
+                <button
+                  key={lake}
+                  onClick={() => goToLake(lake)}
+                  style={{
+                    padding: '6px 12px', borderRadius: 20, cursor: 'pointer',
+                    fontSize: 13, fontWeight: 500,
+                    color: 'rgba(255,255,255,0.7)',
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid rgba(255,255,255,0.15)',
+                  }}
+                >
+                  📍 {lake}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     if (openPanel === 'dates') {
       return (
         <div style={panelStyle}>
           <div style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 10 }}>
-            Plage de dates
+            {t('map.dateRange')}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>Du</span>
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>{t('map.from')}</span>
               <input
                 type="date"
                 value={filters.dateFrom ?? ''}
@@ -361,7 +724,7 @@ export default function MapScreen() {
             </label>
             <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 18 }}>→</span>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>Au</span>
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>{t('map.to')}</span>
               <input
                 type="date"
                 value={filters.dateTo ?? ''}
@@ -419,6 +782,31 @@ export default function MapScreen() {
           <MapContainer center={[47.5, -71.5]} zoom={6} style={{ width: '100%', height: '100%' }}>
             <TileLayer url={satellite ? TILES.satellite.url : TILES.standard.url} attribution={satellite ? TILES.satellite.attribution : TILES.standard.attribution} />
             <MapController catches={visibleCatches} onBoundsChange={handleBoundsChange} mapRef={leafletMapRef} />
+
+            {/* Polygone de la zone affichée */}
+            {Polygon && activeZone && activeZone.polygon.length >= 3 && (
+              <Polygon
+                positions={activeZone.polygon.map((p) => [p.latitude, p.longitude])}
+                pathOptions={{ color: ACCENT, weight: 2, fillColor: ACCENT, fillOpacity: 0.08 }}
+              />
+            )}
+
+            {/* Polygone en cours de dessin */}
+            {Polygon && drawing && draftPoints.length >= 2 && (
+              <Polygon
+                positions={draftPoints.map((p) => [p.latitude, p.longitude])}
+                pathOptions={{ color: ACCENT, weight: 2, fillColor: ACCENT, fillOpacity: 0.15 }}
+              />
+            )}
+            {CircleMarker && drawing && draftPoints.map((p, idx) => (
+              <CircleMarker
+                key={`draft-${idx}`}
+                center={[p.latitude, p.longitude]}
+                radius={6}
+                pathOptions={{ color: '#fff', weight: 2, fillColor: ACCENT, fillOpacity: 1 }}
+              />
+            ))}
+
             {clusters.map((cluster) => {
               const isCluster = cluster.catches.length > 1;
               const singleCatch = cluster.catches[0];
@@ -431,11 +819,13 @@ export default function MapScreen() {
                         <strong style={{ fontSize: 14 }}>{singleCatch.species}</strong>
                         {singleCatch.lake_name && <div style={{ marginTop: 4, fontSize: 12 }}>📍 {singleCatch.lake_name}</div>}
                         {singleCatch.lure && <div style={{ fontSize: 12 }}>🪝 {singleCatch.lure}</div>}
-                        {singleCatch.weight_lbs != null && <div style={{ fontSize: 12 }}>⚖️ {singleCatch.weight_lbs.toFixed(1)} lb</div>}
-                        <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>{formatDateFr(singleCatch.caught_at)}</div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: '#007AFF', fontWeight: 600, cursor: 'pointer' }} onClick={() => router.push(`/catch-detail?id=${singleCatch.id}`)}>
-                          Voir le détail →
-                        </div>
+                        {singleCatch.weight_lbs != null && <div style={{ fontSize: 12 }}>⚖️ {fmtWeight(singleCatch.weight_lbs)}</div>}
+                        <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>{formatDate(singleCatch.caught_at, locale)}</div>
+                        {(!activeZone || isOwnActiveZone) && (
+                          <div style={{ marginTop: 6, fontSize: 12, color: '#007AFF', fontWeight: 600, cursor: 'pointer' }} onClick={() => router.push(`/catch-detail?id=${singleCatch.id}`)}>
+                            {t('map.viewDetail')}
+                          </div>
+                        )}
                       </div>
                     </Popup>
                   </Marker>
@@ -465,16 +855,19 @@ export default function MapScreen() {
         )}
       </div>
 
-      {/* Barre de filtres (overlay) */}
+      {/* Barre de filtres (overlay) — masquée en mode dessin */}
+      {!drawing && (
       <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 1000 }}>
         {/* Ligne de boutons */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 10px 0', overflowX: 'auto' }}>
           {(
             [
-              { key: 'species', label: `🐟 Espèce${filters.species.length > 0 ? ` (${filters.species.length})` : ''}`, active: openPanel === 'species' || filters.species.length > 0 },
-              { key: 'lure', label: `🪝 Leurre${filters.lures.length > 0 ? ` (${filters.lures.length})` : ''}`, active: openPanel === 'lure' || filters.lures.length > 0 },
-              { key: 'dates', label: filters.dateFrom || filters.dateTo ? `📅 ${filters.dateFrom ?? '…'} → ${filters.dateTo ?? '…'}` : '📅 Dates', active: openPanel === 'dates' || !!(filters.dateFrom || filters.dateTo) },
-              { key: 'weather', label: `☀️ Météo${filters.weather.length > 0 ? ` (${filters.weather.length})` : ''}`, active: openPanel === 'weather' || filters.weather.length > 0 },
+              { key: 'search', label: `🔍 ${t('map.searchLake')}`, active: openPanel === 'search' },
+              { key: 'zones', label: `📐 ${t('zones.button')}${activeZone ? ` · ${activeZone.name}` : ''}`, active: openPanel === 'zones' || mapSource !== 'mine' },
+              { key: 'species', label: `🐟 ${t('map.species')}${filters.species.length > 0 ? ` (${filters.species.length})` : ''}`, active: openPanel === 'species' || filters.species.length > 0 },
+              { key: 'lure', label: `🪝 ${t('map.lure')}${filters.lures.length > 0 ? ` (${filters.lures.length})` : ''}`, active: openPanel === 'lure' || filters.lures.length > 0 },
+              { key: 'dates', label: filters.dateFrom || filters.dateTo ? `📅 ${filters.dateFrom ?? '…'} → ${filters.dateTo ?? '…'}` : `📅 ${t('map.dates')}`, active: openPanel === 'dates' || !!(filters.dateFrom || filters.dateTo) },
+              { key: 'weather', label: `☀️ ${t('map.weather')}${filters.weather.length > 0 ? ` (${filters.weather.length})` : ''}`, active: openPanel === 'weather' || filters.weather.length > 0 },
             ] as { key: FilterPanel; label: string; active: boolean }[]
           ).map((btn) => (
             <button
@@ -500,7 +893,7 @@ export default function MapScreen() {
                 background: 'rgba(231,76,60,0.15)', border: '1px solid #E74C3C',
               }}
             >
-              ✕ Réinitialiser
+              ✕ {t('map.reset')}
             </button>
           )}
         </div>
@@ -508,6 +901,104 @@ export default function MapScreen() {
         {/* Panneau d'options */}
         {renderPanel()}
       </div>
+      )}
+
+      {/* Bandeau zone partagée affichée */}
+      {activeZone && !drawing && (
+        <div style={{
+          position: 'absolute', top: 52, left: 14, right: 14, zIndex: 1000,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(6,20,37,0.92)', borderRadius: 20,
+          border: '1px solid rgba(0,230,181,0.35)',
+          padding: '6px 12px', fontSize: 12, fontWeight: 600, color: '#fff',
+        }}>
+          <span>{zoneLoading ? '⏳' : isOwnActiveZone ? '📐' : '👥'}</span>
+          <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {t('zones.sharedBadge', { name: activeZone.name })}
+          </span>
+          <button
+            onClick={() => selectMapSource('mine')}
+            style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Barre d'outils du mode dessin */}
+      {drawing && (
+        <div style={{
+          position: 'absolute', bottom: 24, left: 16, right: 16, zIndex: 1100,
+          background: 'rgba(6,20,37,0.97)', borderRadius: 16,
+          border: '1px solid rgba(255,255,255,0.12)', padding: 12,
+          display: 'flex', flexDirection: 'column', gap: 10,
+        }}>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>
+            {draftPoints.length < 3 ? t('zones.drawMin') : t('zones.drawHint', { n: draftPoints.length })}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={cancelDrawing}
+              style={{ flex: 1, padding: '10px 0', borderRadius: 10, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.6)', background: 'none', border: '1px solid rgba(255,255,255,0.18)' }}
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              onClick={() => setDraftPoints((prev) => prev.slice(0, -1))}
+              disabled={draftPoints.length === 0}
+              style={{ width: 48, borderRadius: 10, cursor: 'pointer', fontSize: 15, color: '#fff', background: 'none', border: '1px solid rgba(255,255,255,0.18)', opacity: draftPoints.length === 0 ? 0.4 : 1 }}
+            >
+              ↩
+            </button>
+            <button
+              onClick={() => setShowNameModal(true)}
+              disabled={draftPoints.length < 3}
+              style={{ flex: 1, padding: '10px 0', borderRadius: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#06141F', background: ACCENT, border: 'none', opacity: draftPoints.length < 3 ? 0.4 : 1 }}
+            >
+              ✓ {t('zones.finish')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal nom de la zone */}
+      {showNameModal && (
+        <div
+          style={{ position: 'absolute', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+          onClick={() => setShowNameModal(false)}
+        >
+          <div
+            style={{ width: '100%', maxWidth: 360, background: 'rgba(6,20,37,0.98)', borderRadius: 18, border: '1px solid rgba(255,255,255,0.12)', padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>{t('zones.nameTitle')}</div>
+            <input
+              type="text"
+              value={zoneName}
+              onChange={(e) => setZoneName(e.target.value)}
+              placeholder={t('zones.namePlaceholder')}
+              autoFocus
+              maxLength={50}
+              style={{ background: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 10, padding: '10px 12px', fontSize: 14, outline: 'none' }}
+            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => setShowNameModal(false)}
+                style={{ flex: 1, padding: '10px 0', borderRadius: 10, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.6)', background: 'none', border: '1px solid rgba(255,255,255,0.18)' }}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                onClick={handleCreateZone}
+                disabled={!zoneName.trim() || savingZone}
+                style={{ flex: 1, padding: '10px 0', borderRadius: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#06141F', background: ACCENT, border: 'none', opacity: !zoneName.trim() || savingZone ? 0.5 : 1 }}
+              >
+                {savingZone ? '…' : t('zones.create')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Compteur de résultats */}
       {activeCount > 0 && (
@@ -517,7 +1008,7 @@ export default function MapScreen() {
           padding: '6px 14px', borderRadius: 20, border: `1px solid ${ACCENT}`,
           fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
         }}>
-          {visibleCatches.length} résultat{visibleCatches.length !== 1 ? 's' : ''}
+          {t(visibleCatches.length === 1 ? 'map.result1' : 'map.resultN', { n: visibleCatches.length })}
         </div>
       )}
 
@@ -530,7 +1021,7 @@ export default function MapScreen() {
           border: '1px solid rgba(245,166,35,0.4)',
           padding: '5px 10px', fontSize: 11, fontWeight: 600, color: colors.warning,
         }}>
-          ☁️ Données locales
+          ☁️ {t('home.localData')}
         </div>
       )}
 
@@ -544,7 +1035,7 @@ export default function MapScreen() {
           padding: '7px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer',
         }}
       >
-        {satellite ? '🗺 Carte' : '🛰 Satellite'}
+        {satellite ? t('map.standard') : t('map.satellite')}
       </button>
 
       {/* Overlay pour fermer le panneau */}
@@ -556,13 +1047,17 @@ export default function MapScreen() {
       )}
 
       {/* Empty state */}
-      {visibleCatches.length === 0 && (
+      {visibleCatches.length === 0 && !drawing && !zoneLoading && (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>
-            {activeCount > 0 ? 'Aucun résultat pour ces filtres' : 'Aucune prise sur la carte'}
+            {activeCount > 0
+              ? t('map.emptyFiltered')
+              : activeZone
+                ? t('zones.zoneEmpty')
+                : t('map.empty')}
           </Text>
           <Text style={styles.emptySubtitle}>
-            {activeCount > 0 ? 'Essaie de modifier ou réinitialiser les filtres.' : 'Tes prises apparaîtront ici une fois enregistrées avec GPS.'}
+            {activeCount > 0 ? t('map.emptyFilteredSub') : activeZone ? '' : t('map.emptySub')}
           </Text>
         </View>
       )}

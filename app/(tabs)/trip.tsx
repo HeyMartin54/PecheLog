@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ConnectionBadge from '@/components/ConnectionBadge';
 import LurePicker from '@/components/LurePicker';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { getPositionSafe } from '@/lib/locationSafe';
 import { loadLuresWithCache, type UserLure } from '@/lib/lureStorage';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
@@ -60,9 +61,9 @@ async function fetchWeatherQuick(
   }
 }
 
-function formatTripDate(isoDate: string): string {
+function formatTripDate(isoDate: string, locale: string): string {
   const d = new Date(isoDate);
-  return d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' });
+  return d.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 function formatLakeNames(trip: Trip): string {
@@ -73,6 +74,7 @@ export default function TripScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user, cachedUserId } = useAuth();
+  const { t } = useSettings();
   const isConnected = useNetworkStatus();
 
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
@@ -179,14 +181,14 @@ export default function TripScreen() {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Localisation', 'Permission GPS refusée.');
+        Alert.alert(t('log.locationTitle'), t('trip.gpsDenied'));
         setQuickState('idle');
         return;
       }
 
       const loc = await getPositionSafe();
       if (!loc) {
-        Alert.alert('Localisation', 'Position GPS introuvable. Réessaie dans quelques secondes.');
+        Alert.alert(t('log.locationTitle'), t('trip.gpsNotFound'));
         setQuickState('idle');
         return;
       }
@@ -195,10 +197,7 @@ export default function TripScreen() {
       const species = quickSpecies ?? last?.species ?? null;
 
       if (!species) {
-        Alert.alert(
-          'Espèce manquante',
-          'Sélectionne une espèce dans la section "Prise rapide" de ton voyage.',
-        );
+        Alert.alert(t('trip.missingSpeciesTitle'), t('trip.missingSpeciesBody'));
         setQuickState('idle');
         return;
       }
@@ -297,7 +296,7 @@ export default function TripScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.pageTitleRow}>
-        <Text style={styles.pageTitle}>Voyage de pêche</Text>
+        <Text style={styles.pageTitle}>{t('trip.title')}</Text>
         <ConnectionBadge />
       </View>
 
@@ -320,16 +319,14 @@ export default function TripScreen() {
         <>
           <TouchableOpacity style={styles.planButton} onPress={() => router.push('/plan-trip')} activeOpacity={0.85}>
             <Ionicons name="add-circle-outline" size={22} color={colors.bg} />
-            <Text style={styles.planButtonText}>Planifier un voyage</Text>
+            <Text style={styles.planButtonText}>{t('trip.plan')}</Text>
           </TouchableOpacity>
 
           {tripHistory.length === 0 && (
             <View style={styles.emptyState}>
               <Text style={styles.emptyEmoji}>🎣</Text>
-              <Text style={styles.emptyTitle}>Ton premier voyage t'attend</Text>
-              <Text style={styles.emptySubtitle}>
-                Planifie un voyage pour pré-remplir tes infos et enregistrer tes prises d'un seul clic.
-              </Text>
+              <Text style={styles.emptyTitle}>{t('trip.emptyTitle')}</Text>
+              <Text style={styles.emptySubtitle}>{t('trip.emptySub')}</Text>
             </View>
           )}
         </>
@@ -339,14 +336,14 @@ export default function TripScreen() {
       <View style={styles.historySection}>
         <View style={styles.historySectionHeader}>
           <Ionicons name="time-outline" size={16} color={colors.accent} />
-          <Text style={styles.sectionLabel}>HISTORIQUE DES VOYAGES</Text>
+          <Text style={styles.sectionLabel}>{t('trip.history')}</Text>
         </View>
         {historyLoading ? (
           <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.lg }} />
         ) : tripHistory.length === 0 ? (
           <View style={styles.historyEmptyBox}>
-            <Text style={styles.historyEmpty}>Aucun voyage terminé pour l'instant.</Text>
-            <Text style={styles.historyEmptySub}>Tes voyages passés apparaîtront ici.</Text>
+            <Text style={styles.historyEmpty}>{t('trip.historyEmpty')}</Text>
+            <Text style={styles.historyEmptySub}>{t('trip.historyEmptySub')}</Text>
           </View>
         ) : (
           tripHistory.map((trip) => (
@@ -401,6 +398,7 @@ function ActiveTripView({
   onEndTrip: () => void;
   onEdit: () => void;
 }) {
+  const { t, locale } = useSettings();
   const [confirmingEnd, setConfirmingEnd] = useState(false);
 
   // Espèces disponibles : celles du voyage, sinon toutes (sauf site prometteur)
@@ -414,16 +412,16 @@ function ActiveTripView({
       <View style={styles.activeTripHeader}>
         <View style={styles.activeBadge}>
           <View style={styles.activeDot} />
-          <Text style={styles.activeBadgeText}>VOYAGE EN COURS</Text>
+          <Text style={styles.activeBadgeText}>{t('trip.active')}</Text>
         </View>
         <TouchableOpacity onPress={onEdit} style={styles.editTripButton} activeOpacity={0.75}>
           <Ionicons name="pencil-outline" size={14} color={colors.accent} />
-          <Text style={styles.editTripText}>Modifier</Text>
+          <Text style={styles.editTripText}>{t('detail.edit')}</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.tripDate}>Depuis le {formatTripDate(trip.startedAt)}</Text>
+      <Text style={styles.tripDate}>{t('trip.since', { date: formatTripDate(trip.startedAt, locale) })}</Text>
 
-      <InfoCard label="LACS VISITÉS" icon="map-outline">
+      <InfoCard label={t('trip.lakes')} icon="map-outline">
         <View style={styles.chipRow}>
           {trip.lakes.map((lake) => (
             <View key={lake.name} style={styles.chip}>
@@ -434,7 +432,7 @@ function ActiveTripView({
       </InfoCard>
 
       {trip.companions.length > 0 && (
-        <InfoCard label="COMPAGNONS" icon="people-outline">
+        <InfoCard label={t('trip.companions')} icon="people-outline">
           <View style={styles.chipRow}>
             {trip.companions.map((c) => (
               <View key={c} style={styles.chip}>
@@ -446,14 +444,14 @@ function ActiveTripView({
       )}
 
       {trip.notes ? (
-        <InfoCard label="NOTES" icon="document-text-outline">
+        <InfoCard label={t('trip.notes')} icon="document-text-outline">
           <Text style={styles.notesText}>{trip.notes}</Text>
         </InfoCard>
       ) : null}
 
       {/* ── Sélection prise rapide ─────────────────────────────────── */}
-      <InfoCard label="PRISE RAPIDE" icon="flash-outline">
-        <Text style={styles.quickSelectLabel}>ESPÈCE</Text>
+      <InfoCard label={t('trip.quick')} icon="flash-outline">
+        <Text style={styles.quickSelectLabel}>{t('trip.species')}</Text>
         <View style={styles.chipRow}>
           {speciesList.map((s) => {
             const cfg = getSpeciesConfig(s);
@@ -472,7 +470,7 @@ function ActiveTripView({
           })}
         </View>
 
-        <Text style={[styles.quickSelectLabel, { marginTop: spacing.md }]}>LEURRE</Text>
+        <Text style={[styles.quickSelectLabel, { marginTop: spacing.md }]}>{t('trip.lure')}</Text>
         <View style={styles.chipRow}>
           {trip.luresSelected.map((name) => {
             const isSelected = quickLure === name;
@@ -490,7 +488,7 @@ function ActiveTripView({
           })}
           <TouchableOpacity style={styles.chip} onPress={onOpenLurePicker} activeOpacity={0.75}>
             <Ionicons name="add" size={13} color={colors.accent} />
-            <Text style={[styles.chipText, { color: colors.accent }]}>Autre</Text>
+            <Text style={[styles.chipText, { color: colors.accent }]}>{t('common.other')}</Text>
           </TouchableOpacity>
         </View>
       </InfoCard>
@@ -506,12 +504,12 @@ function ActiveTripView({
           ) : quickState === 'success' ? (
             <>
               <Ionicons name="checkmark-circle" size={24} color={colors.bg} />
-              <Text style={styles.quickButtonText}>Prise enregistrée !</Text>
+              <Text style={styles.quickButtonText}>{t('trip.quickSaved')}</Text>
             </>
           ) : (
             <>
               <Ionicons name="fish" size={24} color={colors.bg} />
-              <Text style={styles.quickButtonText}>Prise rapide</Text>
+              <Text style={styles.quickButtonText}>{t('trip.quickBtn')}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -523,7 +521,7 @@ function ActiveTripView({
       {confirmingEnd ? (
         <View style={styles.endTripConfirmRow}>
           <TouchableOpacity style={styles.cancelConfirmButton} onPress={() => setConfirmingEnd(false)} activeOpacity={0.75}>
-            <Text style={styles.cancelConfirmText}>Annuler</Text>
+            <Text style={styles.cancelConfirmText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.confirmEndButton, ending && { opacity: 0.6 }]}
@@ -532,13 +530,13 @@ function ActiveTripView({
           >
             {ending
               ? <ActivityIndicator size="small" color={colors.bg} />
-              : <Text style={styles.confirmEndText}>Confirmer</Text>
+              : <Text style={styles.confirmEndText}>{t('common.confirm')}</Text>
             }
           </TouchableOpacity>
         </View>
       ) : (
         <TouchableOpacity style={styles.endTripButton} onPress={() => setConfirmingEnd(true)} activeOpacity={0.75}>
-          <Text style={styles.endTripText}>Terminer le voyage</Text>
+          <Text style={styles.endTripText}>{t('trip.end')}</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -570,23 +568,24 @@ function InfoCard({
 // ─── History card ─────────────────────────────────────────────────────────────
 
 function TripHistoryCard({ trip, onRelaunch, onDelete }: { trip: Trip; onRelaunch: () => void; onDelete: () => void }) {
+  const { t, locale } = useSettings();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const lakeNames = formatLakeNames(trip);
-  const companionsText = trip.companions.length > 0 ? trip.companions.join(', ') : 'Seul(e)';
+  const companionsText = trip.companions.length > 0 ? trip.companions.join(', ') : t('trip.solo');
   const allSpecies = [...new Set(trip.lakes.flatMap((l) => l.targetSpecies))];
 
   return (
     <View style={styles.historyCard}>
       <View style={styles.historyCardHeader}>
-        <Text style={styles.historyDate}>{formatTripDate(trip.startedAt)}</Text>
+        <Text style={styles.historyDate}>{formatTripDate(trip.startedAt, locale)}</Text>
         <View style={styles.historyCardActions}>
           <TouchableOpacity onPress={onRelaunch} style={styles.relaunchButton} activeOpacity={0.75}>
             <Ionicons name="refresh-outline" size={14} color={colors.accent} />
-            <Text style={styles.relaunchText}>Relancer</Text>
+            <Text style={styles.relaunchText}>{t('trip.relaunch')}</Text>
           </TouchableOpacity>
           {confirmingDelete ? (
             <TouchableOpacity onPress={() => { setConfirmingDelete(false); onDelete(); }} style={styles.deleteConfirmButton} activeOpacity={0.75}>
-              <Text style={styles.deleteConfirmText}>Supprimer ?</Text>
+              <Text style={styles.deleteConfirmText}>{t('trip.deleteConfirm')}</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity onPress={() => setConfirmingDelete(true)} style={styles.deleteButton} activeOpacity={0.75} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>

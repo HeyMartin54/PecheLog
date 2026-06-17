@@ -2,7 +2,7 @@
 
 > Ce fichier contient toutes les spécifications et décisions prises pour le projet PêcheLog.
 > Il sert de contexte pour Claude Code ET pour Cursor AI.
-> Mis à jour : Avril 2026 — **État réel du code inclus (✅ Implémenté / ⚠️ Partiel / ❌ Pas encore)**
+> Mis à jour : Juin 2026 — **État réel du code inclus (✅ Implémenté / ⚠️ Partiel / ❌ Pas encore)**
 
 ---
 
@@ -80,9 +80,10 @@ Le pêcheur est sur l'eau, potentiellement en train de gérer un poisson. La sai
 | Notes | Textarea | ✅ |
 
 ### Comportement hors-ligne
-- Si Supabase insert échoue → catch mis en file `offline_catches_queue_v1` (AsyncStorage)
+- Si hors-ligne (vérifié AVANT l'insert) ou si l'insert Supabase échoue → catch mis en file `offline_catches_queue_v1` (AsyncStorage)
 - Sync automatique déclenchée quand connexion rétablie (`SyncManager` dans `app/_layout.tsx`)
-- Les photos/médias **ne sont pas** inclus dans la file offline (à implémenter)
+- Les photos/médias **sont inclus** dans la file offline (copiés localement via `persistMediaForOffline`, uploadés à la sync) ✅
+- La météo manquante est récupérée rétroactivement (Open-Meteo historique) lors de la sync ✅
 
 ### Préconfiguration depuis Voyage
 - Le dernier espèce/leurre utilisé est sauvegardé via `saveLastCatchSettings()` dans `tripStorage.ts`
@@ -97,20 +98,20 @@ Le pêcheur est sur l'eau, potentiellement en train de gérer un poisson. La sai
 - Web : `react-leaflet` + `leaflet` (intégration partielle, fichier `map.web.tsx`)
 
 ### Fonctionnalités implémentées
-- Affichage des prises comme **marqueurs colorés** par espèce (couleurs depuis `SPECIES_CONFIG`)
-- **Barre de filtres** horizontale scrollable : Espèce, Leurre, Plage de dates, Météo
+- Affichage des prises comme **marqueurs colorés** par espèce (couleurs custom via `useSpeciesColors`)
+- **Clustering des marqueurs** au dézoom (natif ET web, segments bicolores multi-espèces) ✅
+- **Barre de filtres** horizontale scrollable : 🔍 Recherche de lac, Espèce, Leurre, Plage de dates, Météo
+- **Recherche de lac** — cherche parmi les lacs des prises de l'utilisateur (fonctionne hors-ligne) et centre la carte sur le lac choisi ✅
 - **Toggle satellite** / carte standard
 - **Callout au clic** sur un marqueur → affiche espèce, leurre, poids, date
 - **Région calculée dynamiquement** pour englober tous les pins
 - Données chargées depuis Supabase ou cache si hors-ligne
 
 ### Fonctionnalités prévues mais non implémentées ❌
-- Clustering des marqueurs (regroupement au dézoom)
-- Couche bathymétrique (GeoJSON du MELCC)
+- Couche bathymétrique (GeoJSON du MELCC — nécessite des données externes)
 - Légende de profondeur
-- Barre de recherche de lac
 - Cartes par lac avec statistiques
-- MapBox Offline Packs (remplacé à terme par react-native-maps offline)
+- Tuiles hors-ligne (MapBox Offline Packs non applicable avec react-native-maps)
 
 ---
 
@@ -132,10 +133,10 @@ Module de planification et suivi de sorties de pêche. Permet d'organiser une so
   - Notes libres
 
 ### Persistance
-- `lib/tripStorage.ts` — AsyncStorage (local uniquement, pas dans Supabase)
+- `lib/tripStorage.ts` — AsyncStorage (cache local) + **sync Supabase** (table `trips`) ✅
 - Types : `Trip`, `TripLake`, `LastCatchSettings`
-- Fonctions : `saveActiveTrip`, `loadActiveTrip`, `endActiveTrip`, `loadTripHistory`, `savePrefillTrip`, `loadPrefillTrip`, `addFrequentCompanions`, `loadFrequentCompanions`
-- Les voyages ne sont **pas** synchronisés avec Supabase (à implémenter si besoin)
+- Fonctions : `saveActiveTrip`, `loadActiveTrip`, `endActiveTrip`, `loadTripHistory`, `deleteTripFromHistory`, `syncLocalTripsToSupabase`, `savePrefillTrip`, `loadPrefillTrip`, `addFrequentCompanions`, `loadFrequentCompanions`
+- Offline-first : créés/terminés hors-ligne dans AsyncStorage, poussés vers Supabase au retour du signal (voir pièges dans la mémoire projet)
 
 ---
 
@@ -164,22 +165,39 @@ Module de planification et suivi de sorties de pêche. Permet d'organiser une so
 
 ---
 
-## 🤝 Partage de cartes ❌ PAS ENCORE IMPLÉMENTÉ
+## 🤝 Partage de cartes par zones ✅ IMPLÉMENTÉ
 
-### 3 niveaux de partage prévus
-| Niveau | Description | Implémentation |
-|--------|------------|----------------|
-| Par lac | Toutes les prises d'un lac spécifique | Filtre sur `lake_name` + invitation |
-| Par région | Une région entière (ex: Saguenay-Lac-Saint-Jean) | Bounding box géographique |
-| Tout | Toutes les données de l'utilisateur | Export complet |
+### Principe
+L'utilisateur **dessine une zone** (polygone) sur sa carte, lui donne un **nom**, et obtient un
+**code d'invitation**. Toute prise située à l'intérieur de la zone est partagée avec les
+utilisateurs qui rejoignent la zone avec ce code. Le destinataire bascule entre **sa carte**
+et les **zones reçues** via le panneau « Zones » de la carte.
 
-### Mécanisme prévu
-- Génération de lien/code de partage unique
-- Permissions : lecture seule OU lecture + écriture
-- Sur la carte : toggle entre ses données et les cartes reçues
-- Sécurisé par Row Level Security dans Supabase (tables `maps`, `shares` non créées)
+### Flux utilisateur
+1. Carte > bouton **📐 Zones** > « ✏️ Dessiner une zone »
+2. Mode dessin : chaque touche sur la carte ajoute un sommet (min. 3) — annuler / défaire / terminer
+3. Nommer la zone → création dans Supabase → code d'invitation affiché
+4. « Partager » envoie le code (Share natif / clipboard sur web)
+5. Le destinataire entre le code dans « Rejoindre une zone » → la zone apparaît dans ses sources
+6. En sélectionnant une zone reçue : polygone affiché + prises du propriétaire dans la zone
+   (marqueurs/clusters habituels, callout **sans** navigation vers le détail)
 
-> **Note**: L'onglet "Partage" du design original est absent. À l'heure actuelle il n'y a pas de remplacement prévu à court terme.
+### Sécurité (côté serveur — SQL dans DATABASE.md, à exécuter dans Supabase)
+- Tables `shared_zones` (polygone JSONB + invite_code) et `zone_shares` (adhésions), RLS strict
+- `redeem_zone_code(code)` — RPC SECURITY DEFINER : seule façon de rejoindre une zone
+- `get_zone_catches(zone_id)` — RPC SECURITY DEFINER : vérifie l'adhésion puis ne retourne
+  QUE les prises du propriétaire **strictement à l'intérieur** du polygone (`point_in_polygon` en plpgsql)
+- Le destinataire peut quitter ; le propriétaire peut supprimer la zone (cascade sur les adhésions)
+
+### Côté client
+- `lib/zones.ts` — `loadZones`, `createZone`, `deleteZone`, `leaveZone`, `redeemZoneCode`,
+  `fetchZoneCatches`, `pointInPolygon` (même ray-casting que le SQL) + cache AsyncStorage
+- Ma propre zone sélectionnée = filtrage **local** de mes prises (fonctionne hors-ligne) ;
+  zone reçue = RPC (avec cache du dernier résultat pour la lecture hors-ligne)
+- Implémenté sur **les deux cartes** : `map.tsx` (react-native-maps `Polygon`) et `map.web.tsx` (Leaflet)
+
+> ⚠️ **Prérequis** : exécuter le bloc SQL `shared_zones` / `zone_shares` / fonctions de DATABASE.md
+> dans Supabase > SQL Editor avant d'utiliser la fonctionnalité.
 
 ---
 
@@ -225,10 +243,11 @@ L'app doit fonctionner **à 100%** sans connexion internet. C'est non-négociabl
 
 #### 3. File d'attente de prises ✅
 - `lib/offlineSync.ts`
-- `enqueueOfflineCatch()` — met en file si insert Supabase échoue
-- `trySyncOfflineCatches()` — tente l'envoi quand connexion rétablie
+- `enqueueOfflineCatch()` — met en file si hors-ligne ou si insert Supabase échoue
+- `trySyncOfflineCatches()` — tente l'envoi quand connexion rétablie (verrou anti-doublons)
+- `persistMediaForOffline()` — copie les médias dans `offline_media/` pour upload différé ✅
+- Enrichissement météo rétroactif (Open-Meteo) pour les prises capturées hors-ligne ✅
 - Clé AsyncStorage : `offline_catches_queue_v1`
-- **Limitation** : les photos/médias ne sont pas inclus dans la file
 
 #### 4. Voyages ✅
 - `lib/tripStorage.ts` — AsyncStorage, fonctionne 100% hors-ligne
@@ -251,24 +270,32 @@ L'app doit fonctionner **à 100%** sans connexion internet. C'est non-négociabl
 
 ### Indicateurs UI actuels
 - `ConnectionBadge` affiché dans les écrans (pas de bannière orange comme prévu)
-- Compteur de prises en attente : accessible via `getOfflineQueueCount()` (non affiché dans les réglages)
+- Compteur de prises en attente affiché dans Réglages > Synchronisation, avec bouton « Synchroniser maintenant » ✅
 
 ---
 
-## ⚙️ Réglages ⚠️ PARTIEL
+## ⚙️ Réglages ✅ IMPLÉMENTÉ
 
 ### État actuel (`app/(tabs)/settings.tsx`)
 - **Profil** : affiche l'email de l'utilisateur ✅
-- **Langue** : UI présente (FR/EN) mais non fonctionnel ❌
-- **Unités** : UI présente (°C/°F, lb/kg, po/cm) mais non fonctionnel ❌
-- **Couleurs des espèces** : UI de personnalisation présente, persistée via `useSpeciesColors` ✅
+- **Langue** : FR/EN fonctionnel — i18n complet de l'interface via `lib/i18n.ts` + `useSettings().t()` ✅
+  - Les **données** (noms d'espèces, leurres, lacs, conditions météo stockées) restent en français — ne jamais les traduire
+- **Unités** : °C/°F, lb/kg, po/cm fonctionnelles sur tous les écrans (accueil, stats, carte, formulaire, détail) ✅
+  - Stockage canonique inchangé (°C, lb, pouces) — conversion à l'affichage ET à la saisie via `lib/settingsStorage.ts`
+  - Sync best-effort vers `profiles.units_*` ; pull au premier lancement sur un nouvel appareil
+- **Synchronisation** : compteur de prises en attente + bouton « Synchroniser maintenant » ✅
+- **Équipement** : Mes leurres (`my-lures.tsx`) + Espèces & marqueurs (`my-species.tsx`, couleurs custom) ✅
 - **Déconnexion** : bouton fonctionnel ✅
 
 ### Sections prévues non implémentées ❌
-1. **Préconfiguration rapide** — Espèces et leurres favoris, lacs fréquentés
-2. **Sonar Bluetooth** — Toggle + scan d'appareils BLE
-3. **Cartes hors-ligne** — Gestion des régions téléchargées
-4. **Données en attente de sync** — Compteur de la file offline
+1. **Sonar Bluetooth** — Toggle + scan BLE (nécessite `react-native-ble-plx`, dev build et matériel)
+2. **Cartes hors-ligne** — Gestion des régions téléchargées
+
+### Architecture des préférences
+- `lib/settingsStorage.ts` — types (`AppSettings`), persistance AsyncStorage (`@pechelog_settings_v1`), conversions d'unités, sync profil
+- `lib/i18n.ts` — dictionnaires FR/EN (`translate`, `dateLocale`)
+- `contexts/SettingsContext.tsx` — `useSettings()` → `{ settings, updateSettings, t, locale, fmtTemp, fmtWeight, fmtLength }`
+- **Convention** : tout nouvel écran doit utiliser `t()` pour ses chaînes UI et `fmt*()` pour afficher température/poids/longueur
 
 ---
 
@@ -302,50 +329,56 @@ PecheLog/
 ├── app/
 │   ├── (tabs)/
 │   │   ├── index.tsx          # ✅ Accueil — météo, stats résumé, prises récentes
-│   │   ├── map.tsx            # ✅ Carte native (react-native-maps)
-│   │   ├── map.web.tsx        # ⚠️ Carte web (react-leaflet, partiel)
+│   │   ├── map.tsx            # ✅ Carte native (clustering, recherche de lac, filtres)
+│   │   ├── map.web.tsx        # ✅ Carte web (react-leaflet — mêmes fonctionnalités)
 │   │   ├── stats.tsx          # ✅ Statistiques complètes
-│   │   ├── trip.tsx           # ✅ Voyages de pêche (NOUVEAU)
-│   │   ├── settings.tsx       # ⚠️ Réglages (UI partielle)
+│   │   ├── trip.tsx           # ✅ Voyages de pêche (prise rapide, historique)
+│   │   ├── settings.tsx       # ✅ Réglages (langue, unités, sync, équipement)
 │   │   └── _layout.tsx        # ✅ 5 onglets : Accueil, Carte, Stats, Voyage, Réglages
 │   ├── log-catch.tsx          # ✅ Formulaire de saisie rapide
-│   ├── catch-detail.tsx       # ✅ Détail d'une prise
-│   ├── plan-trip.tsx          # ✅ Planifier un voyage (NOUVEAU)
+│   ├── catch-detail.tsx       # ✅ Détail d'une prise (édition complète)
+│   ├── plan-trip.tsx          # ✅ Planifier un voyage
+│   ├── my-lures.tsx           # ✅ Gestion des leurres personnels
+│   ├── my-species.tsx         # ✅ Gestion espèces actives + couleurs marqueurs
 │   ├── login.tsx              # ✅ Écran de login OAuth
 │   ├── modal.tsx              # Route modale générique
 │   ├── auth/callback.tsx      # ✅ Callback OAuth (web)
-│   └── _layout.tsx            # ✅ Layout + AuthProvider + SyncManager
+│   └── _layout.tsx            # ✅ Layout + AuthProvider + SettingsProvider + SyncManager
 ├── components/
-│   ├── LurePicker.tsx         # ✅ Sélecteur de leurre modal (NOUVEAU)
-│   ├── ConnectionBadge.tsx    # ✅ Badge statut réseau (remplace OfflineBanner)
-│   ├── LocationPickerMap.tsx  # ✅ Carte pour choisir un point GPS
-│   ├── LocationPickerMap.web.tsx  # ✅ Version web
-│   ├── StaticMapView.tsx      # ✅ Carte en lecture seule (NOUVEAU)
-│   ├── StaticMapView.web.tsx  # ✅ Version web
-│   ├── Themed.tsx             # ✅ Text/View thématisés
-│   ├── StyledText.tsx         # ✅ Composants typographie
-│   └── ExternalLink.tsx       # ✅ Lien web safe
-│   # ❌ NON CRÉÉS : CatchCard, ChipSelector, SizeToggle, MapMarker, StatBar, PhotoPicker
+│   ├── LurePicker.tsx         # ✅ Sélecteur de leurre modal
+│   ├── LureFormModal.tsx      # ✅ Création/édition de leurre (photo incluse)
+│   ├── SpeciesDetailModal.tsx # ✅ Création/édition d'espèce custom
+│   ├── ConnectionBadge.tsx    # ✅ Badge statut réseau
+│   ├── LocationPickerMap.tsx  # ✅ Carte pour choisir un point GPS (+ .web.tsx)
+│   ├── StaticMapView.tsx      # ✅ Carte en lecture seule (+ .web.tsx)
+│   ├── Themed.tsx / StyledText.tsx / ExternalLink.tsx
 ├── lib/
 │   ├── supabase.ts            # ✅ Client Supabase (URL hardcodée)
 │   ├── theme.ts               # ✅ Couleurs, typographie, spacing, radius, shadows
-│   ├── species.ts             # ✅ Catalogue 11 espèces (NOUVEAU)
-│   ├── lures.ts               # ✅ Catalogue ~80 leurres (NOUVEAU)
-│   ├── offlineSync.ts         # ✅ File d'attente offline (NOUVEAU)
-│   ├── catchCache.ts          # ✅ Cache AsyncStorage des prises (NOUVEAU)
-│   ├── tripStorage.ts         # ✅ Persistance voyages (NOUVEAU)
+│   ├── types.ts               # ✅ Types partagés (CatchPayload, MediaItem, SizeCategory…)
+│   ├── zones.ts               # ✅ Zones de partage (polygones, codes, RPC) (NOUVEAU)
+│   ├── i18n.ts                # ✅ Dictionnaires FR/EN + translate() (NOUVEAU)
+│   ├── settingsStorage.ts     # ✅ Préférences unités/langue + conversions (NOUVEAU)
+│   ├── species.ts             # ✅ Catalogue 11 espèces
+│   ├── lures.ts               # ✅ Catalogue ~80 leurres
+│   ├── lureStorage.ts         # ✅ Leurres personnels (Supabase + cache)
+│   ├── net.ts                 # ✅ fetchWithTimeout / isOnline / withTimeout (OBLIGATOIRES)
+│   ├── locationSafe.ts        # ✅ getPositionSafe (OBLIGATOIRE, jamais getCurrentPositionAsync brut)
+│   ├── offlineSync.ts         # ✅ File d'attente offline (médias + météo rétroactive)
+│   ├── catchCache.ts          # ✅ Cache AsyncStorage des prises
+│   ├── tripStorage.ts         # ✅ Persistance voyages (AsyncStorage + Supabase)
+│   ├── uploadMedia.ts / uploadLureMedia.ts  # ✅ Upload Supabase Storage
 │   ├── hooks/
 │   │   ├── useLocation.ts     # ✅ GPS + reverse geocoding Nominatim
 │   │   ├── useWeather.ts      # ✅ OpenWeatherMap (EXPO_PUBLIC_OPENWEATHER_API_KEY)
-│   │   ├── useNetworkStatus.ts# ✅ NetInfo (remplace useOffline.ts)
-│   │   └── useSpeciesColors.ts# ✅ Couleurs custom espèces (NOUVEAU)
-│   │   # ❌ NON CRÉÉS : useAuth.ts (dans contexts/), useSonar.ts, useOffline.ts
-│   └── utils/
-│       # ❌ NON CRÉÉS : geocoding.ts (inline dans useLocation), formatting.ts
-│   # ❌ NON CRÉÉ : types.ts (types définis inline dans chaque fichier)
-│   # ❌ NON CRÉÉ : lib/offline/ (WatermelonDB non configuré)
+│   │   ├── useNetworkStatus.ts# ✅ NetInfo
+│   │   ├── useSpeciesColors.ts# ✅ Couleurs custom espèces
+│   │   ├── useActiveSpecies.ts# ✅ Espèces actives de l'utilisateur
+│   │   └── useCustomSpecies.ts# ✅ Espèces personnalisées
+│   │   # ❌ NON CRÉÉ : useSonar.ts (matériel requis)
 ├── contexts/
-│   └── AuthContext.tsx        # ✅ Auth globale avec useAuth()
+│   ├── AuthContext.tsx        # ✅ Auth globale avec useAuth()
+│   └── SettingsContext.tsx    # ✅ useSettings() — langue, unités, t(), fmt* (NOUVEAU)
 ├── assets/                    # Images, fonts
 ├── CLAUDE.md                  # Ce fichier
 ├── DATABASE.md                # Schéma SQL complet
@@ -390,12 +423,16 @@ notes, caught_at, created_at
 
 ### `profiles`
 ```sql
-id (= auth.uid), display_name, email
+id (= auth.uid), display_name, avatar_url,
+preferred_species[], preferred_lures[], preferred_lakes[],
+units_temp (C|F), units_weight (lb|kg), units_length (in|cm)
 ```
 
-### Tables non encore créées ❌
-- `maps` — pour le partage de cartes
-- `shares` — permissions de partage (RLS)
+### Autres tables (voir DATABASE.md)
+- `trips` — voyages synchronisés ✅
+- `user_lures` — leurres personnels ✅
+- `catch_media` — photos/vidéos ✅
+- `maps` / `map_shares` — définies dans DATABASE.md, **pas encore utilisées par le client** (partage à venir)
 
 ---
 
@@ -416,23 +453,21 @@ id (= auth.uid), display_name, email
 2. Auth OAuth complet (Google, Apple, Facebook + email/password)
 3. Écran d'accueil avec météo, stats résumé, prises récentes
 4. Formulaire de saisie rapide (GPS, météo, espèce, leurre, photos)
-5. Carte interactive avec filtres (espèce, leurre, date, météo)
+5. Carte interactive : filtres, clustering, recherche de lac (natif + web)
 6. Statistiques complètes (7 vues de données, filtres, records)
-7. Voyages de pêche (planification + suivi + historique) — **fonctionnalité ajoutée**
-8. Mode hors-ligne de base (cache + file d'attente)
-9. Synchronisation automatique au retour du signal
+7. Voyages de pêche (planification + prise rapide + historique + sync Supabase)
+8. Mode hors-ligne (cache + file d'attente + médias + météo rétroactive)
+9. Synchronisation automatique au retour du signal + sync manuelle dans Réglages
+10. Réglages fonctionnels : langue FR/EN (i18n complet), unités °C/°F lb/kg po/cm
+11. Central `lib/types.ts` (types partagés consolidés)
+12. Gestion leurres personnels + espèces custom (couleurs, actives/inactives)
+13. **Partage de cartes par zones** — dessin de polygone nommé, code d'invitation, prises de la
+    zone visibles par les destinataires, bascule ma carte / zones reçues (natif + web).
+    ⚠️ SQL de DATABASE.md (`shared_zones`, `zone_shares`, RPC) à exécuter dans Supabase.
 
-### ⚠️ En cours / Partiel
-10. Réglages — UI présente, persistance des préférences manquante
-11. Mode hors-ligne complet — WatermelonDB à activer
-12. Carte web — react-leaflet partiellement intégré
-
-### ❌ Pas encore commencé
-13. Partage de cartes entre utilisateurs
-14. Sonar Bluetooth (Deeper PRO+)
-15. Couche bathymétrique (MELCC)
-16. Cartes hors-ligne (tuiles téléchargées)
-17. Central `lib/types.ts` (types actuellement inline)
-18. Préférences unités (°C/°F, lb/kg, po/cm) fonctionnelles
-19. Upload médias dans la file offline
-20. Publication EAS + soumission stores
+### ❌ Pas encore commencé (et pourquoi)
+14. Sonar Bluetooth (Deeper PRO+) — nécessite `react-native-ble-plx` (non installé), un dev build EAS et le matériel pour tester
+15. Couche bathymétrique (MELCC) — nécessite les données GeoJSON externes
+16. Cartes hors-ligne (tuiles téléchargées) — non supporté nativement par react-native-maps
+17. WatermelonDB — installé mais non activé ; le cache AsyncStorage couvre les besoins actuels
+18. Publication EAS + soumission stores

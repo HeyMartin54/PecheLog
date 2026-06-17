@@ -30,6 +30,8 @@ import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { storeLength, storeWeight } from '@/lib/settingsStorage';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
 import { getPositionSafe } from '@/lib/locationSafe';
 import { fetchWithTimeout, isOnline } from '@/lib/net';
@@ -44,37 +46,9 @@ import { loadActiveTrip, saveLastCatchSettings, type Trip } from '@/lib/tripStor
 const LAKE_NAME_FEATURE = false;
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type { CatchPayload, MediaItem, SizeCategory } from '@/lib/types';
+
 type SizeMode = 'approx' | 'weight' | 'length';
-type SizeCategory = 'small' | 'medium' | 'large' | 'trophy';
-
-type MediaItem = {
-  uri: string;
-  type: 'photo' | 'video';
-};
-
-type CatchPayload = {
-  user_id: string;
-  map_id: string | null;
-  trip_id: string | null;
-  species: string;
-  lure: string | null;
-  latitude: number;
-  longitude: number;
-  lake_name: string | null;
-  depth_meters: number | null;
-  depth_source: 'manual' | 'sonar' | 'bathymetric' | null;
-  temperature_c: number | null;
-  wind_speed_kmh: number | null;
-  wind_direction_deg: number | null;
-  speed_kmh: number | null;
-  weather_conditions: string | null;
-  size_category: SizeCategory | null;
-  weight_lbs: number | null;
-  length_inches: number | null;
-  notes: string | null;
-  caught_at: string;
-  local_id: string | null;
-};
 
 import { colors, radius, spacing } from '@/lib/theme';
 
@@ -335,6 +309,7 @@ function fmtTime(d: Date): string {
 export default function LogCatchScreen() {
   const router = useRouter();
   const { user, cachedUserId } = useAuth();
+  const { settings, t, locale, fmtTemp } = useSettings();
   const insets = useSafeAreaInsets();
   const { activeSpecies } = useActiveSpecies();
   const { prefillSpecies, prefillLure, returnTo } = useLocalSearchParams<{
@@ -619,7 +594,7 @@ export default function LogCatchScreen() {
     try {
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permissionResult.granted) {
-        Alert.alert('Permissions', "Impossible d'accéder à ta galerie sans la permission de lecture.");
+        Alert.alert(t('log.permTitle'), t('log.permBody'));
         return;
       }
 
@@ -645,30 +620,31 @@ export default function LogCatchScreen() {
     // en file d'attente — elle sera envoyée quand la session sera restaurée.
     const effectiveUserId = user?.id ?? cachedUserId;
     if (!effectiveUserId) {
-      Alert.alert('Erreur', 'Tu dois être connecté pour enregistrer une prise.');
+      Alert.alert(t('common.error'), t('log.authBody'));
       return;
     }
 
     if (!selectedSpecies) {
-      Alert.alert('Espèce', 'Sélectionne une espèce.');
+      Alert.alert(t('log.speciesTitle'), t('log.speciesBody'));
       return;
     }
 
     if (!effectiveCoords) {
-      Alert.alert(
-        'Localisation',
-        "Impossible de récupérer ta position. Vérifie que le GPS est activé et réessaie.",
-      );
+      Alert.alert(t('log.locationTitle'), t('log.locationBody'));
       return;
     }
 
     const depthFeet =
       depthMeters.trim().length > 0 ? Number.parseFloat(depthMeters.replace(',', '.')) : null;
     const depthValue = depthFeet != null ? depthFeet * 0.3048 : null; // converti pieds → mètres
-    const weightValue =
+    // Les champs poids/longueur sont saisis dans l'unité préférée de
+    // l'utilisateur, mais toujours stockés en lb / pouces dans Supabase.
+    const weightInput =
       weightLbs.trim().length > 0 ? Number.parseFloat(weightLbs.replace(',', '.')) : null;
-    const lengthValue =
+    const weightValue = weightInput != null ? storeWeight(weightInput, settings.weightUnit) : null;
+    const lengthInput =
       lengthInches.trim().length > 0 ? Number.parseFloat(lengthInches.replace(',', '.')) : null;
+    const lengthValue = lengthInput != null ? storeLength(lengthInput, settings.lengthUnit) : null;
 
     const sizeCategoryValue: SizeCategory | null =
       sizeMode === 'approx' ? sizeCategory : null;
@@ -706,10 +682,7 @@ export default function LogCatchScreen() {
         const persistedMedia = await persistMediaForOffline(media);
         await enqueueOfflineCatch({ payload, media: persistedMedia });
         await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-        Alert.alert(
-          'Mode hors-ligne',
-          'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
-        );
+        Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
         navigateAfterSave();
         return;
       }
@@ -740,10 +713,7 @@ export default function LogCatchScreen() {
         const persistedMedia = await persistMediaForOffline(media);
         await enqueueOfflineCatch({ payload, media: persistedMedia });
         await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-        Alert.alert(
-          'Mode hors-ligne',
-          'Prise enregistrée localement. Elle sera synchronisée au retour du signal.',
-        );
+        Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
         navigateAfterSave();
         return;
       }
@@ -766,17 +736,14 @@ export default function LogCatchScreen() {
       }
 
       await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-      Alert.alert('Prise enregistrée', 'Ta prise a été enregistrée avec succès.');
+      Alert.alert(t('log.savedTitle'), t('log.savedBody'));
       navigateAfterSave();
     } catch (error) {
       console.warn('[LogCatch] Erreur inattendue, stockage hors-ligne', error);
       const persistedMedia = await persistMediaForOffline(media);
       await enqueueOfflineCatch({ payload, media: persistedMedia });
       await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-      Alert.alert(
-        'Mode hors-ligne',
-        'Prise enregistrée localement. Elle sera synchronisées au retour du signal.',
-      );
+      Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
       navigateAfterSave();
     } finally {
       setSaving(false);
@@ -796,7 +763,7 @@ export default function LogCatchScreen() {
         >
           <Text style={styles.backButtonText}>←</Text>
         </TouchableOpacity>
-        <AutoFieldText style={styles.headerTitle}>Nouvelle prise</AutoFieldText>
+        <AutoFieldText style={styles.headerTitle}>{t('log.title')}</AutoFieldText>
       </View>
 
       <ScrollView
@@ -806,12 +773,12 @@ export default function LogCatchScreen() {
       >
         {/* Section Emplacement */}
         <View style={styles.section}>
-          <SectionTitle>📍 Emplacement</SectionTitle>
+          <SectionTitle>{t('log.sectionLocation')}</SectionTitle>
 
           {autoLoading && !hasLocation && (
             <View style={styles.autoLoadingRow}>
               <ActivityIndicator size="small" color={ACCENT_COLOR} />
-              <AutoFieldText style={styles.autoLoadingText}>Récupération de ta position…</AutoFieldText>
+              <AutoFieldText style={styles.autoLoadingText}>{t('log.locating')}</AutoFieldText>
             </View>
           )}
 
@@ -826,7 +793,7 @@ export default function LogCatchScreen() {
 
               <AutoFieldBadge
                 icon="📍"
-                value={hasLocation ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}` : 'GPS…'}
+                value={hasLocation ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}` : t('log.gps')}
                 onPress={hasLocation ? handleOpenLocationPicker : undefined}
                 modified={!!manualLocation}
               />
@@ -840,7 +807,7 @@ export default function LogCatchScreen() {
                     value={webDate}
                     onChangeText={setWebDate}
                     onBlur={handleWebDateBlur}
-                    placeholder="AAAA-MM-JJ"
+                    placeholder={t('log.datePlaceholder')}
                     placeholderTextColor={ACCENT_COLOR}
                     maxLength={10}
                   />
@@ -868,10 +835,10 @@ export default function LogCatchScreen() {
                     <Text style={styles.dateTimeBtnIcon}>📅</Text>
                     <View style={styles.dateTimeBtnText}>
                       <Text style={styles.dateTimeBtnDate}>
-                        {catchDateTime.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
+                        {catchDateTime.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
                       </Text>
                       <Text style={styles.dateTimeBtnTime}>
-                        🕐 {catchDateTime.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })}
+                        🕐 {catchDateTime.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })}
                       </Text>
                     </View>
                     <Text style={styles.dateTimeBtnChevron}>›</Text>
@@ -883,7 +850,7 @@ export default function LogCatchScreen() {
                       display={Platform.OS === 'ios' ? 'spinner' : 'default'}
                       maximumDate={new Date()}
                       onChange={handlePickerChange}
-                      locale="fr-CA"
+                      locale={locale}
                     />
                   )}
                 </>
@@ -900,7 +867,7 @@ export default function LogCatchScreen() {
                   style={styles.badgeTextInput}
                   value={speedInput}
                   onChangeText={(v) => { setSpeedInput(v); setSpeedModified(true); }}
-                  placeholder={autoLoading ? 'GPS…' : '—'}
+                  placeholder={autoLoading ? t('log.gps') : '—'}
                   placeholderTextColor={TEXT_MUTED}
                   keyboardType="decimal-pad"
                 />
@@ -925,15 +892,15 @@ export default function LogCatchScreen() {
         {/* Section Météo — masquée pour "Site prometteur" */}
         {!isSitePrometteur && (
           <View style={styles.section}>
-            <SectionTitle>🌤 Météo</SectionTitle>
+            <SectionTitle>{t('log.sectionWeather')}</SectionTitle>
             <View style={styles.autoFieldsRow}>
               <AutoFieldBadge
                 icon={weatherConditionsIcon}
-                value={weatherConditions ?? (autoLoading ? 'Météo…' : '—')}
+                value={weatherConditions ?? (autoLoading ? t('home.weatherLoading') : '—')}
               />
               <AutoFieldBadge
                 icon="🌡"
-                value={temperatureC != null ? `${temperatureC.toFixed(1)} °C` : (autoLoading ? 'Météo…' : '—')}
+                value={temperatureC != null ? fmtTemp(temperatureC) : (autoLoading ? t('home.weatherLoading') : '—')}
               />
               <AutoFieldBadge
                 icon="💨"
@@ -942,7 +909,7 @@ export default function LogCatchScreen() {
                     ? windDirectionDeg != null
                       ? `${windDegToCompass(windDirectionDeg)} ${windSpeedKmh.toFixed(0)} km/h`
                       : `${windSpeedKmh.toFixed(0)} km/h`
-                    : autoLoading ? 'Météo…' : '—'
+                    : autoLoading ? t('home.weatherLoading') : '—'
                 }
               />
             </View>
@@ -951,7 +918,7 @@ export default function LogCatchScreen() {
 
         {/* Species */}
         <View style={styles.section}>
-          <SectionTitle>🐟 Espèce</SectionTitle>
+          <SectionTitle>{t('log.sectionSpecies')}</SectionTitle>
           <View style={styles.chipRow}>
             {activeSpecies.map((s) => (
               <Chip
@@ -967,7 +934,7 @@ export default function LogCatchScreen() {
         {/* Leurre — masqué pour "Site prometteur" */}
         {!isSitePrometteur && (
           <View style={styles.section}>
-            <SectionTitle>🪝 Leurre</SectionTitle>
+            <SectionTitle>{t('log.sectionLure')}</SectionTitle>
             <TouchableOpacity
               style={styles.lureButton}
               onPress={() => setShowLurePicker(true)}
@@ -984,13 +951,13 @@ export default function LogCatchScreen() {
                       </AutoFieldText>
                     ) : null}
                   </View>
-                  <AutoFieldText style={styles.lureButtonChange}>Changer ›</AutoFieldText>
+                  <AutoFieldText style={styles.lureButtonChange}>{t('log.change')}</AutoFieldText>
                 </>
               ) : (
                 <>
                   <Text style={styles.lureButtonEmoji}>🪝</Text>
                   <AutoFieldText style={styles.lureButtonPlaceholder}>
-                    Choisir un leurre…
+                    {t('log.chooseLure')}
                   </AutoFieldText>
                   <AutoFieldText style={styles.lureButtonChange}>›</AutoFieldText>
                 </>
@@ -1024,7 +991,7 @@ export default function LogCatchScreen() {
 
         {/* Depth */}
         <View style={styles.section}>
-          <SectionTitle>📏 Profondeur</SectionTitle>
+          <SectionTitle>{t('log.sectionDepth')}</SectionTitle>
 
           {sonarDepthMeters != null && (
             <View style={styles.autoFieldsRow}>
@@ -1041,7 +1008,7 @@ export default function LogCatchScreen() {
           <View style={[styles.inputGroup, { maxWidth: 260 }]}>
             <TextInput
               style={styles.input}
-              placeholder="Profondeur en pieds (ex: 18)"
+              placeholder={t('log.depthPlaceholder')}
               placeholderTextColor={TEXT_MUTED}
               keyboardType="decimal-pad"
               value={depthMeters}
@@ -1052,21 +1019,21 @@ export default function LogCatchScreen() {
 
         {/* Grosseur — masquée pour "Site prometteur" */}
         {!isSitePrometteur && <View style={styles.section}>
-          <SectionTitle>📐 Grosseur</SectionTitle>
+          <SectionTitle>{t('log.sectionSize')}</SectionTitle>
 
           <View style={styles.sizeToggleRow}>
             <SizeToggleButton
-              label="P / M / G"
+              label={t('log.sizeApprox')}
               active={sizeMode === 'approx'}
               onPress={() => setSizeMode('approx')}
             />
             <SizeToggleButton
-              label="Poids (lb)"
+              label={t('log.sizeWeight', { unit: t(`unit.${settings.weightUnit}`) })}
               active={sizeMode === 'weight'}
               onPress={() => setSizeMode('weight')}
             />
             <SizeToggleButton
-              label="Longueur (po)"
+              label={t('log.sizeLength', { unit: t(`unit.${settings.lengthUnit}`) })}
               active={sizeMode === 'length'}
               onPress={() => setSizeMode('length')}
             />
@@ -1075,22 +1042,22 @@ export default function LogCatchScreen() {
           {sizeMode === 'approx' && (
             <View style={styles.chipRow}>
               <Chip
-                label="🐟 Petit"
+                label={t('log.small')}
                 selected={sizeCategory === 'small'}
                 onPress={() => setSizeCategory('small')}
               />
               <Chip
-                label="🐠 Moyen"
+                label={t('log.medium')}
                 selected={sizeCategory === 'medium'}
                 onPress={() => setSizeCategory('medium')}
               />
               <Chip
-                label="🐋 Gros"
+                label={t('log.large')}
                 selected={sizeCategory === 'large'}
                 onPress={() => setSizeCategory('large')}
               />
               <Chip
-                label="🏆 Trophée"
+                label={t('log.trophy')}
                 selected={sizeCategory === 'trophy'}
                 onPress={() => setSizeCategory('trophy')}
               />
@@ -1101,7 +1068,7 @@ export default function LogCatchScreen() {
             <View style={styles.inputGroup}>
               <TextInput
                 style={styles.input}
-                placeholder="Poids en livres (ex: 4.2)"
+                placeholder={t(settings.weightUnit === 'kg' ? 'log.weightPlaceholderKg' : 'log.weightPlaceholderLb')}
                 placeholderTextColor={TEXT_MUTED}
                 keyboardType="decimal-pad"
                 value={weightLbs}
@@ -1114,7 +1081,7 @@ export default function LogCatchScreen() {
             <View style={styles.inputGroup}>
               <TextInput
                 style={styles.input}
-                placeholder="Longueur en pouces (ex: 18.5)"
+                placeholder={t(settings.lengthUnit === 'cm' ? 'log.lengthPlaceholderCm' : 'log.lengthPlaceholderIn')}
                 placeholderTextColor={TEXT_MUTED}
                 keyboardType="decimal-pad"
                 value={lengthInches}
@@ -1127,10 +1094,10 @@ export default function LogCatchScreen() {
         {/* Photos / Vidéos — masquées pour "Site prometteur" */}
         {!isSitePrometteur && (
           <View style={styles.section}>
-            <SectionTitle>📸 Photos / Vidéos</SectionTitle>
+            <SectionTitle>{t('log.sectionMedia')}</SectionTitle>
             <TouchableOpacity style={styles.mediaButton} onPress={handlePickMedia} activeOpacity={0.85}>
               <Text style={{ fontSize: 22 }}>📸</Text>
-              <Text style={styles.mediaButtonText}>Ajouter photos / vidéos</Text>
+              <Text style={styles.mediaButtonText}>{t('log.addMedia')}</Text>
             </TouchableOpacity>
             {media.length > 0 && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
@@ -1179,12 +1146,12 @@ export default function LogCatchScreen() {
 
         {/* Notes */}
         <View style={styles.section}>
-          <SectionTitle>📝 Notes additionnelles</SectionTitle>
+          <SectionTitle>{t('log.sectionNotes')}</SectionTitle>
           <TextInput
             style={[styles.input, styles.notesInput]}
             multiline
             numberOfLines={4}
-            placeholder="Ex: vent léger du nord, eau claire, fond de sable..."
+            placeholder={t('log.notesPlaceholder')}
             placeholderTextColor={TEXT_MUTED}
             value={notes}
             onChangeText={setNotes}
@@ -1202,7 +1169,7 @@ export default function LogCatchScreen() {
         {saving ? (
           <ActivityIndicator color="#0B1A2B" />
         ) : (
-          <AutoFieldText style={styles.saveButtonText}>✓ Enregistrer la prise</AutoFieldText>
+          <AutoFieldText style={styles.saveButtonText}>{t('log.save')}</AutoFieldText>
         )}
       </TouchableOpacity>
 
@@ -1210,15 +1177,15 @@ export default function LogCatchScreen() {
         <View style={styles.pickerContainer}>
           <View style={[styles.pickerHeader, { paddingTop: insets.top + 12 }]}>
             <TouchableOpacity onPress={() => setShowLocationPicker(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.pickerCancel}>Annuler</Text>
+              <Text style={styles.pickerCancel}>{t('common.cancel')}</Text>
             </TouchableOpacity>
-            <Text style={styles.pickerTitle}>Modifier l'emplacement</Text>
+            <Text style={styles.pickerTitle}>{t('log.editLocation')}</Text>
             <TouchableOpacity onPress={handleConfirmLocation} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Text style={styles.pickerConfirm}>Confirmer</Text>
+              <Text style={styles.pickerConfirm}>{t('common.confirm')}</Text>
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.pickerHint}>Appuyez sur la carte ou faites glisser le marqueur</Text>
+          <Text style={styles.pickerHint}>{t('log.pickerHint')}</Text>
 
           {pickerCoord && (
             <LocationPickerMap
@@ -1241,7 +1208,7 @@ export default function LogCatchScreen() {
                 }}
                 style={styles.pickerResetBtn}
               >
-                <Text style={styles.pickerResetText}>Réinitialiser au GPS</Text>
+                <Text style={styles.pickerResetText}>{t('log.resetGps')}</Text>
               </TouchableOpacity>
             )}
           </View>

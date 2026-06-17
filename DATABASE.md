@@ -94,6 +94,167 @@ CREATE POLICY "trips_own" ON trips
   WITH CHECK (auth.uid() = user_id);
 ```
 
+### shared_zones — Zones de partage dessinées sur la carte ✅ (utilisé par le client)
+```sql
+CREATE TABLE shared_zones (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id    UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  -- Polygone dessiné par l'utilisateur : [{ "latitude": .., "longitude": .. }, ...]
+  polygon     JSONB NOT NULL,
+  invite_code TEXT UNIQUE NOT NULL DEFAULT encode(gen_random_bytes(4), 'hex'),
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_shared_zones_owner ON shared_zones(owner_id);
+CREATE INDEX idx_shared_zones_code  ON shared_zones(invite_code);
+
+ALTER TABLE shared_zones ENABLE ROW LEVEL SECURITY;
+
+-- Le propriétaire gère ses zones
+CREATE POLICY "zones_owner_all" ON shared_zones
+  FOR ALL
+  USING (owner_id = auth.uid())
+  WITH CHECK (owner_id = auth.uid());
+
+-- Les destinataires voient les zones qu'on leur a partagées
+CREATE POLICY "zones_member_select" ON shared_zones
+  FOR SELECT
+  USING (id IN (SELECT zone_id FROM zone_shares WHERE shared_with = auth.uid()));
+```
+
+### zone_shares — Adhésions aux zones partagées ✅ (utilisé par le client)
+```sql
+CREATE TABLE zone_shares (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  zone_id     UUID NOT NULL REFERENCES shared_zones(id) ON DELETE CASCADE,
+  shared_with UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (zone_id, shared_with)
+);
+
+CREATE INDEX idx_zone_shares_shared_with ON zone_shares(shared_with);
+CREATE INDEX idx_zone_shares_zone        ON zone_shares(zone_id);
+
+ALTER TABLE zone_shares ENABLE ROW LEVEL SECURITY;
+
+-- Visible par le destinataire et le propriétaire de la zone
+CREATE POLICY "zone_shares_select" ON zone_shares
+  FOR SELECT
+  USING (
+    shared_with = auth.uid()
+    OR zone_id IN (SELECT id FROM shared_zones WHERE owner_id = auth.uid())
+  );
+
+-- Le destinataire peut quitter ; le propriétaire peut révoquer
+CREATE POLICY "zone_shares_delete" ON zone_shares
+  FOR DELETE
+  USING (
+    shared_with = auth.uid()
+    OR zone_id IN (SELECT id FROM shared_zones WHERE owner_id = auth.uid())
+  );
+
+-- Pas de policy INSERT : l'adhésion passe uniquement par redeem_zone_code()
+```
+
+### Fonctions de partage de zones ✅
+```sql
+-- Rejoindre une zone avec un code d'invitation.
+-- SECURITY DEFINER : permet de trouver la zone par code sans la voir au préalable.
+CREATE OR REPLACE FUNCTION redeem_zone_code(p_code TEXT)
+RETURNS TABLE (zone_id UUID, zone_name TEXT) AS $$
+DECLARE
+  v_zone shared_zones%ROWTYPE;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'not_authenticated';
+  END IF;
+
+  SELECT * INTO v_zone FROM shared_zones WHERE invite_code = lower(trim(p_code));
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'invalid_code';
+  END IF;
+  IF v_zone.owner_id = auth.uid() THEN
+    RAISE EXCEPTION 'own_zone';
+  END IF;
+
+  INSERT INTO zone_shares (zone_id, shared_with)
+  VALUES (v_zone.id, auth.uid())
+  ON CONFLICT (zone_id, shared_with) DO NOTHING;
+
+  RETURN QUERY SELECT v_zone.id, v_zone.name;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Test point-dans-polygone (ray casting) sur le JSONB du polygone
+CREATE OR REPLACE FUNCTION point_in_polygon(
+  p_lat DOUBLE PRECISION,
+  p_lng DOUBLE PRECISION,
+  p_polygon JSONB
+) RETURNS BOOLEAN AS $$
+DECLARE
+  n INT;
+  i INT;
+  j INT;
+  xi DOUBLE PRECISION; yi DOUBLE PRECISION;
+  xj DOUBLE PRECISION; yj DOUBLE PRECISION;
+  inside BOOLEAN := FALSE;
+BEGIN
+  n := jsonb_array_length(p_polygon);
+  IF n IS NULL OR n < 3 THEN RETURN FALSE; END IF;
+  j := n - 1;
+  FOR i IN 0..n-1 LOOP
+    xi := (p_polygon->i->>'longitude')::DOUBLE PRECISION;
+    yi := (p_polygon->i->>'latitude')::DOUBLE PRECISION;
+    xj := (p_polygon->j->>'longitude')::DOUBLE PRECISION;
+    yj := (p_polygon->j->>'latitude')::DOUBLE PRECISION;
+    IF ((yi > p_lat) <> (yj > p_lat))
+       AND (p_lng < (xj - xi) * (p_lat - yi) / (yj - yi) + xi) THEN
+      inside := NOT inside;
+    END IF;
+  END LOOP;
+  RETURN inside;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Prises du propriétaire à l'intérieur d'une zone.
+-- SECURITY DEFINER : contourne le RLS de catches, MAIS vérifie d'abord
+-- que l'appelant est le propriétaire ou un destinataire de la zone,
+-- et ne retourne QUE les prises strictement dans le polygone.
+CREATE OR REPLACE FUNCTION get_zone_catches(p_zone_id UUID)
+RETURNS SETOF catches AS $$
+DECLARE
+  v_zone shared_zones%ROWTYPE;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'not_authenticated';
+  END IF;
+
+  SELECT * INTO v_zone FROM shared_zones WHERE id = p_zone_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'zone_not_found';
+  END IF;
+
+  IF v_zone.owner_id <> auth.uid()
+     AND NOT EXISTS (
+       SELECT 1 FROM zone_shares
+       WHERE zone_id = p_zone_id AND shared_with = auth.uid()
+     ) THEN
+    RAISE EXCEPTION 'not_authorized';
+  END IF;
+
+  RETURN QUERY
+    SELECT c.*
+    FROM catches c
+    WHERE c.user_id = v_zone.owner_id
+      AND c.latitude IS NOT NULL
+      AND c.longitude IS NOT NULL
+      AND point_in_polygon(c.latitude, c.longitude, v_zone.polygon);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+```
+
 ### maps — Cartes (personnelles et partagées)
 ```sql
 CREATE TABLE maps (

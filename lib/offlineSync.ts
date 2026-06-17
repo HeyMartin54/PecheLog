@@ -4,6 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '@/lib/supabase';
 import { fetchWithTimeout, isOnline } from '@/lib/net';
 import { uploadMediaFile } from '@/lib/uploadMedia';
+import type { CatchPayload, MediaItem } from '@/lib/types';
 
 // ─── Clé de la file d'attente ─────────────────────────────────────────────────
 
@@ -11,33 +12,9 @@ export const OFFLINE_QUEUE_KEY = 'offline_catches_queue_v1';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type CatchPayload = {
-  user_id: string;
-  map_id: string | null;
-  trip_id: string | null;
-  species: string;
-  lure: string | null;
-  latitude: number;
-  longitude: number;
-  lake_name: string | null;
-  depth_meters: number | null;
-  depth_source: 'manual' | 'sonar' | 'bathymetric' | null;
-  temperature_c: number | null;
-  wind_speed_kmh: number | null;
-  wind_direction_deg: number | null;
-  speed_kmh: number | null;
-  weather_conditions: string | null;
-  size_category: string | null;
-  weight_lbs: number | null;
-  length_inches: number | null;
-  notes: string | null;
-  caught_at: string;
-  local_id: string | null;
-};
-
 export type OfflineQueuedCatch = {
   payload: CatchPayload;
-  media: { uri: string; type: 'photo' | 'video' }[];
+  media: MediaItem[];
 };
 
 // ─── File d'attente ───────────────────────────────────────────────────────────
@@ -57,9 +34,7 @@ export async function enqueueOfflineCatch(item: OfflineQueuedCatch): Promise<voi
 
 const OFFLINE_MEDIA_DIR = (FileSystem.documentDirectory ?? '') + 'offline_media/';
 
-export async function persistMediaForOffline(
-  media: { uri: string; type: 'photo' | 'video' }[],
-): Promise<{ uri: string; type: 'photo' | 'video' }[]> {
+export async function persistMediaForOffline(media: MediaItem[]): Promise<MediaItem[]> {
   if (Platform.OS === 'web' || media.length === 0) return [];
 
   try {
@@ -72,7 +47,7 @@ export async function persistMediaForOffline(
     return [];
   }
 
-  const persisted: { uri: string; type: 'photo' | 'video' }[] = [];
+  const persisted: MediaItem[] = [];
   for (const item of media) {
     try {
       const ext = item.type === 'video' ? 'mp4' : 'jpg';

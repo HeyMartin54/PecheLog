@@ -28,6 +28,8 @@ import { uploadMediaFile } from '@/lib/uploadMedia';
 import { loadCatchesCache } from '@/lib/catchCache';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { displayLength, displayWeight, storeLength, storeWeight } from '@/lib/settingsStorage';
 import {
   createUserLure,
   loadLuresWithCache,
@@ -35,17 +37,9 @@ import {
   type UserLure,
 } from '@/lib/lureStorage';
 
-type SizeCategory = 'small' | 'medium' | 'large' | 'trophy';
-type SizeMode = 'approx' | 'measures';
+import type { CatchMedia, SizeCategory } from '@/lib/types';
 
-type CatchMedia = {
-  id: string;
-  media_type: 'photo' | 'video';
-  storage_path: string;
-  thumbnail_path: string | null;
-  local_uri: string | null;
-  uploaded: boolean;
-};
+type SizeMode = 'approx' | 'measures';
 
 function windDegToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
@@ -161,13 +155,6 @@ type CatchDetail = {
   caught_at: string;
 };
 
-const SIZE_LABELS: Record<SizeCategory, string> = {
-  small: 'Petit',
-  medium: 'Moyen',
-  large: 'Grand',
-  trophy: 'Trophée',
-};
-
 const SIZE_OPTIONS: SizeCategory[] = ['small', 'medium', 'large', 'trophy'];
 
 export default function CatchDetailScreen() {
@@ -175,6 +162,7 @@ export default function CatchDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const isWeb = Platform.OS === 'web';
   const { user } = useAuth();
+  const { settings, t, locale, fmtTemp, fmtWeight, fmtLength } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
@@ -245,7 +233,7 @@ export default function CatchDetailScreen() {
           return;
         }
       }
-      Alert.alert('Hors-ligne', 'Cette prise n\'est pas disponible localement.');
+      Alert.alert(t('detail.offlineTitle'), t('detail.offlineBody'));
       router.back();
       return;
     }
@@ -282,7 +270,7 @@ export default function CatchDetailScreen() {
             return;
           }
         }
-        Alert.alert('Erreur', 'Impossible de charger cette prise.');
+        Alert.alert(t('common.error'), t('detail.loadError'));
         router.back();
         return;
       }
@@ -303,8 +291,18 @@ export default function CatchDetailScreen() {
     const hasMeasures = data.weight_lbs != null || data.length_inches != null;
     setSizeMode(hasMeasures ? 'measures' : 'approx');
     setSizeCategory(data.size_category ?? null);
-    setWeightLbs(data.weight_lbs != null ? String(data.weight_lbs) : '');
-    setLengthInches(data.length_inches != null ? String(data.length_inches) : '');
+    // Les champs d'édition affichent l'unité préférée ; la valeur est
+    // reconvertie en lb / pouces à la sauvegarde.
+    setWeightLbs(
+      data.weight_lbs != null
+        ? String(Math.round(displayWeight(data.weight_lbs, settings.weightUnit) * 100) / 100)
+        : '',
+    );
+    setLengthInches(
+      data.length_inches != null
+        ? String(Math.round(displayLength(data.length_inches, settings.lengthUnit) * 100) / 100)
+        : '',
+    );
     setNotes(data.notes ?? '');
     setLatitude(data.latitude ?? null);
     setLongitude(data.longitude ?? null);
@@ -404,14 +402,14 @@ export default function CatchDetailScreen() {
     if (useCamera) {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission refusée', "Autorisez l'accès à la caméra dans les réglages.");
+        Alert.alert(t('detail.permDenied'), t('detail.cameraPerm'));
         return;
       }
       result = await ImagePicker.launchCameraAsync(options);
     } else {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Permissions', "Impossible d'accéder à ta galerie sans la permission de lecture.");
+        Alert.alert(t('log.permTitle'), t('log.permBody'));
         return;
       }
       result = await ImagePicker.launchImageLibraryAsync(options);
@@ -428,17 +426,17 @@ export default function CatchDetailScreen() {
       pickMediaFile(false);
       return;
     }
-    Alert.alert('Ajouter un média', 'Choisir une source', [
-      { text: 'Prendre une photo', onPress: () => pickMediaFile(true) },
-      { text: 'Choisir dans la bibliothèque', onPress: () => pickMediaFile(false) },
-      { text: 'Annuler', style: 'cancel' },
+    Alert.alert(t('detail.addMediaTitle'), t('detail.chooseSource'), [
+      { text: t('detail.takePhoto'), onPress: () => pickMediaFile(true) },
+      { text: t('detail.fromLibrary'), onPress: () => pickMediaFile(false) },
+      { text: t('common.cancel'), style: 'cancel' },
     ]);
   };
 
   async function handleSave() {
     if (!catch_) return;
     if (!species.trim()) {
-      Alert.alert('Validation', 'L\'espèce est obligatoire.');
+      Alert.alert(t('detail.validation'), t('detail.speciesRequired'));
       return;
     }
 
@@ -450,8 +448,14 @@ export default function CatchDetailScreen() {
         lake_name: lakeName.trim() || null,
         depth_meters: depthMeters !== '' ? parseFloat(depthMeters) * 0.3048 : null,
         size_category: sizeMode === 'approx' ? sizeCategory : null,
-        weight_lbs: sizeMode === 'measures' && weightLbs !== '' ? parseFloat(weightLbs) : null,
-        length_inches: sizeMode === 'measures' && lengthInches !== '' ? parseFloat(lengthInches) : null,
+        weight_lbs:
+          sizeMode === 'measures' && weightLbs !== ''
+            ? storeWeight(parseFloat(weightLbs.replace(',', '.')), settings.weightUnit)
+            : null,
+        length_inches:
+          sizeMode === 'measures' && lengthInches !== ''
+            ? storeLength(parseFloat(lengthInches.replace(',', '.')), settings.lengthUnit)
+            : null,
         notes: notes.trim() || null,
         latitude,
         longitude,
@@ -468,7 +472,7 @@ export default function CatchDetailScreen() {
         .eq('id', catch_.id);
 
       if (error) {
-        Alert.alert('Erreur', 'Impossible de sauvegarder les modifications.');
+        Alert.alert(t('common.error'), t('detail.saveError'));
         return;
       }
 
@@ -501,7 +505,7 @@ export default function CatchDetailScreen() {
       const { error } = await supabase.from('catches').delete().eq('id', catch_!.id);
       if (error) {
         setConfirmDelete(false);
-        Alert.alert('Erreur', 'Impossible de supprimer cette prise.');
+        Alert.alert(t('common.error'), t('detail.deleteError'));
       } else {
         router.back();
       }
@@ -520,13 +524,13 @@ export default function CatchDetailScreen() {
 
   if (!catch_) return null;
 
-  const caughtDate = new Date(catch_.caught_at).toLocaleDateString('fr-CA', {
+  const caughtDate = new Date(catch_.caught_at).toLocaleDateString(locale, {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
     year: 'numeric',
   });
-  const caughtTime = new Date(catch_.caught_at).toLocaleTimeString('fr-CA', {
+  const caughtTime = new Date(catch_.caught_at).toLocaleTimeString(locale, {
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -540,12 +544,12 @@ export default function CatchDetailScreen() {
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Text style={styles.backBtnText}>← Retour</Text>
+          <Text style={styles.backBtnText}>{t('detail.back')}</Text>
         </TouchableOpacity>
         {fromCache ? (
           <View style={styles.offlineBadge}>
             <Ionicons name="cloud-offline-outline" size={12} color={colors.warning} />
-            <Text style={styles.offlineBadgeText}>Lecture seule</Text>
+            <Text style={styles.offlineBadgeText}>{t('detail.readOnly')}</Text>
           </View>
         ) : (
           <TouchableOpacity
@@ -556,7 +560,7 @@ export default function CatchDetailScreen() {
             {saving ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
-              <Text style={[styles.editBtnText, editing && { color: '#fff' }]}>{editing ? 'Sauvegarder' : 'Modifier'}</Text>
+              <Text style={[styles.editBtnText, editing && { color: '#fff' }]}>{editing ? t('detail.save') : t('detail.edit')}</Text>
             )}
           </TouchableOpacity>
         )}
@@ -579,7 +583,7 @@ export default function CatchDetailScreen() {
                 style={styles.speciesInput}
                 value={species}
                 onChangeText={setSpecies}
-                placeholder="Espèce"
+                placeholder={t('log.speciesTitle')}
                 placeholderTextColor={TEXT_MUTED}
               />
             ) : (
@@ -589,7 +593,7 @@ export default function CatchDetailScreen() {
         </View>
 
         {/* Section: Lieu */}
-        <SectionCard title="📍 Lieu">
+        <SectionCard title={t('detail.sectionPlace')}>
           {/* Carte dans la card — hauteur fixe, aucun problème de flex */}
           {pickerCoord != null && (
             <View style={styles.cardMap}>
@@ -615,7 +619,7 @@ export default function CatchDetailScreen() {
                   onPress={() => setShowLocationPicker(true)}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.cardMapEditBtnText}>✏️ Choisir sur la carte</Text>
+                  <Text style={styles.cardMapEditBtnText}>{t('detail.chooseOnMap')}</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -628,7 +632,7 @@ export default function CatchDetailScreen() {
                   style={styles.lakeNameInput}
                   value={lakeName}
                   onChangeText={setLakeName}
-                  placeholder="Nom du lac"
+                  placeholder={t('detail.lakePlaceholder')}
                   placeholderTextColor={TEXT_MUTED}
                 />
               ) : (
@@ -637,7 +641,7 @@ export default function CatchDetailScreen() {
                 </Text>
               )}
               <InfoRow
-                label="Coordonnées GPS"
+                label={t('detail.gpsCoords')}
                 value={
                   latitude != null && longitude != null
                     ? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
@@ -653,7 +657,7 @@ export default function CatchDetailScreen() {
                       value={webDate}
                       onChangeText={setWebDate}
                       onBlur={handleWebDateBlur}
-                      placeholder="AAAA-MM-JJ"
+                      placeholder={t('log.datePlaceholder')}
                       placeholderTextColor={ACCENT}
                       maxLength={10}
                     />
@@ -678,10 +682,10 @@ export default function CatchDetailScreen() {
                       <Text style={styles.dateTimeBtnIcon}>📅</Text>
                       <View style={styles.dateTimeBtnText}>
                         <Text style={styles.dateTimeBtnDate}>
-                          {editDateTime.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
+                          {editDateTime.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
                         </Text>
                         <Text style={styles.dateTimeBtnTime}>
-                          🕐 {editDateTime.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })}
+                          🕐 {editDateTime.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })}
                         </Text>
                       </View>
                       <Text style={styles.dateTimeBtnChevron}>›</Text>
@@ -693,7 +697,7 @@ export default function CatchDetailScreen() {
                         display={Platform.OS === 'ios' ? 'spinner' : 'default'}
                         maximumDate={new Date()}
                         onChange={handlePickerChange}
-                        locale="fr-CA"
+                        locale={locale}
                       />
                     )}
                   </>
@@ -715,7 +719,7 @@ export default function CatchDetailScreen() {
         </SectionCard>
 
         {/* Section: Prise */}
-        <SectionCard title="Détails de la prise">
+        <SectionCard title={t('detail.sectionCatch')}>
           {editing ? (
             <>
               {/* Toggle Approximatif / Mesures */}
@@ -728,7 +732,7 @@ export default function CatchDetailScreen() {
                     activeOpacity={0.8}
                   >
                     <Text style={[styles.sizeChipText, sizeMode === m && styles.sizeChipTextActive]}>
-                      {m === 'approx' ? 'P / M / G' : 'Poids / Longueur'}
+                      {m === 'approx' ? t('log.sizeApprox') : t('detail.sizeMeasures')}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -736,7 +740,7 @@ export default function CatchDetailScreen() {
 
               {sizeMode === 'approx' ? (
                 <View style={styles.fieldRow}>
-                  <Text style={styles.fieldLabel}>Taille</Text>
+                  <Text style={styles.fieldLabel}>{t('detail.size')}</Text>
                   <View style={styles.sizeChipsRow}>
                     {SIZE_OPTIONS.map((opt) => (
                       <TouchableOpacity
@@ -746,7 +750,7 @@ export default function CatchDetailScreen() {
                         activeOpacity={0.8}
                       >
                         <Text style={[styles.sizeChipText, sizeCategory === opt && styles.sizeChipTextActive]}>
-                          {SIZE_LABELS[opt]}
+                          {t(`size.${opt}`)}
                         </Text>
                       </TouchableOpacity>
                     ))}
@@ -754,24 +758,24 @@ export default function CatchDetailScreen() {
                 </View>
               ) : (
                 <>
-                  <EditableRow label="Poids (lb)" value={weightLbs} editing onChangeText={setWeightLbs} placeholder="0.0" keyboardType="decimal-pad" />
-                  <EditableRow label="Longueur (po)" value={lengthInches} editing onChangeText={setLengthInches} placeholder="0.0" keyboardType="decimal-pad" />
+                  <EditableRow label={t('log.sizeWeight', { unit: t(`unit.${settings.weightUnit}`) })} value={weightLbs} editing onChangeText={setWeightLbs} placeholder="0.0" keyboardType="decimal-pad" />
+                  <EditableRow label={t('log.sizeLength', { unit: t(`unit.${settings.lengthUnit}`) })} value={lengthInches} editing onChangeText={setLengthInches} placeholder="0.0" keyboardType="decimal-pad" />
                 </>
               )}
             </>
           ) : (
             <>
               {catch_.size_category && (
-                <InfoRow label="Taille" value={SIZE_LABELS[catch_.size_category]} />
+                <InfoRow label={t('detail.size')} value={t(`size.${catch_.size_category}`)} />
               )}
               {catch_.weight_lbs != null && (
-                <InfoRow label="Poids" value={`${catch_.weight_lbs.toFixed(1)} lb`} />
+                <InfoRow label={t('settings.weight')} value={fmtWeight(catch_.weight_lbs)} />
               )}
               {catch_.length_inches != null && (
-                <InfoRow label="Longueur" value={`${catch_.length_inches.toFixed(1)} po`} />
+                <InfoRow label={t('settings.length')} value={fmtLength(catch_.length_inches)} />
               )}
               {!catch_.size_category && catch_.weight_lbs == null && catch_.length_inches == null && (
-                <InfoRow label="Taille" value="—" />
+                <InfoRow label={t('detail.size')} value="—" />
               )}
             </>
           )}
@@ -819,23 +823,23 @@ export default function CatchDetailScreen() {
         </SectionCard>
 
         {/* Section: Technique */}
-        <SectionCard title="🎣 Technique">
+        <SectionCard title={t('detail.sectionTechnique')}>
           {editing ? (
             <View style={styles.fieldRow}>
-              <Text style={styles.fieldLabel}>Leurre</Text>
+              <Text style={styles.fieldLabel}>{t('map.lure')}</Text>
               <TouchableOpacity
                 style={styles.lurePickerBtn}
                 onPress={() => setShowLurePicker(true)}
                 activeOpacity={0.8}
               >
                 <Text style={lure ? styles.lurePickerBtnValue : styles.lurePickerBtnPlaceholder}>
-                  {lure || 'Choisir un leurre…'}
+                  {lure || t('log.chooseLure')}
                 </Text>
                 <Text style={styles.lurePickerBtnChevron}>›</Text>
               </TouchableOpacity>
             </View>
           ) : (
-            <InfoRow label="Leurre" value={catch_.lure ?? '—'} />
+            <InfoRow label={t('map.lure')} value={catch_.lure ?? '—'} />
           )}
           <LurePicker
             visible={showLurePicker}
@@ -861,35 +865,35 @@ export default function CatchDetailScreen() {
             onClose={() => setShowLureForm(false)}
           />
           <EditableRow
-            label="Profondeur (pi)"
-            value={editing ? depthMeters : catch_.depth_meters != null ? `${(catch_.depth_meters * 3.28084).toFixed(1)} pi` : '—'}
+            label={t('detail.depthFt')}
+            value={editing ? depthMeters : catch_.depth_meters != null ? `${(catch_.depth_meters * 3.28084).toFixed(1)} ${t('unit.ft')}` : '—'}
             editing={editing}
             onChangeText={setDepthMeters}
             placeholder="0.0"
             keyboardType="decimal-pad"
           />
           <InfoRow
-            label="Vitesse bateau"
+            label={t('detail.boatSpeed')}
             value={catch_.speed_kmh != null ? `${catch_.speed_kmh.toFixed(1)} km/h` : '—'}
           />
         </SectionCard>
 
         {/* Section: Météo */}
-        <SectionCard title="🌤 Météo">
+        <SectionCard title={t('log.sectionWeather')}>
           <InfoRow
-            label="Ciel"
+            label={t('detail.sky')}
             value={(editing ? editConditions : catch_.weather_conditions) ?? '—'}
           />
           <InfoRow
-            label="Température"
+            label={t('settings.temperature')}
             value={
               (editing ? editTempC : catch_.temperature_c) != null
-                ? `${(editing ? editTempC : catch_.temperature_c)!.toFixed(1)} °C`
+                ? fmtTemp((editing ? editTempC : catch_.temperature_c)!)
                 : '—'
             }
           />
           <InfoRow
-            label="Vent"
+            label={t('detail.wind')}
             value={
               (editing ? editWindKmh : catch_.wind_speed_kmh) != null
                 ? (editing ? editWindDeg : catch_.wind_direction_deg) != null
@@ -901,13 +905,13 @@ export default function CatchDetailScreen() {
         </SectionCard>
 
         {/* Section: Notes */}
-        <SectionCard title="Notes">
+        <SectionCard title={t('detail.sectionNotes')}>
           {editing ? (
             <TextInput
               style={styles.notesInput}
               value={notes}
               onChangeText={setNotes}
-              placeholder="Ajouter des notes..."
+              placeholder={t('detail.notesPlaceholder')}
               placeholderTextColor={TEXT_MUTED}
               multiline
               numberOfLines={4}
@@ -915,7 +919,7 @@ export default function CatchDetailScreen() {
             />
           ) : (
             <Text style={[styles.fieldValue, !catch_.notes && { color: TEXT_MUTED }]}>
-              {catch_.notes || 'Aucune note'}
+              {catch_.notes || t('detail.noNotes')}
             </Text>
           )}
         </SectionCard>
@@ -923,28 +927,26 @@ export default function CatchDetailScreen() {
         {/* Cancel / Delete */}
         {editing && (
           <TouchableOpacity style={styles.cancelBtn} onPress={handleEditToggle}>
-            <Text style={styles.cancelBtnText}>Annuler</Text>
+            <Text style={styles.cancelBtnText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
         )}
 
         {!editing && !confirmDelete && !fromCache && (
           <TouchableOpacity style={styles.deleteBtn} onPress={() => setConfirmDelete(true)}>
-            <Text style={styles.deleteBtnText}>🗑 Supprimer cette prise</Text>
+            <Text style={styles.deleteBtnText}>{t('detail.delete')}</Text>
           </TouchableOpacity>
         )}
 
         {!editing && confirmDelete && (
           <View style={styles.confirmDeleteCard}>
-            <Text style={styles.confirmDeleteText}>
-              Supprimer définitivement cette prise ?
-            </Text>
+            <Text style={styles.confirmDeleteText}>{t('detail.confirmDelete')}</Text>
             <View style={styles.confirmDeleteRow}>
               <TouchableOpacity
                 style={styles.confirmDeleteCancelBtn}
                 onPress={() => setConfirmDelete(false)}
                 disabled={deleting}
               >
-                <Text style={styles.confirmDeleteCancelText}>Annuler</Text>
+                <Text style={styles.confirmDeleteCancelText}>{t('common.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.confirmDeleteConfirmBtn}
@@ -954,7 +956,7 @@ export default function CatchDetailScreen() {
                 {deleting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.confirmDeleteConfirmText}>Oui, supprimer</Text>
+                  <Text style={styles.confirmDeleteConfirmText}>{t('detail.confirmYes')}</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -967,13 +969,13 @@ export default function CatchDetailScreen() {
         <View style={styles.pickerContainer}>
           <View style={[styles.pickerHeader, { paddingTop: insets.top + 12 }]}>
             <TouchableOpacity onPress={() => setShowLocationPicker(false)}>
-              <Text style={styles.backBtnText}>← Annuler</Text>
+              <Text style={styles.backBtnText}>{t('detail.cancelBack')}</Text>
             </TouchableOpacity>
-            <Text style={styles.pickerHeaderTitle}>Choisir la position</Text>
+            <Text style={styles.pickerHeaderTitle}>{t('detail.choosePosition')}</Text>
             <View style={{ width: 70 }} />
           </View>
 
-          <Text style={styles.pickerHint}>Appuyez sur la carte ou faites glisser le marqueur</Text>
+          <Text style={styles.pickerHint}>{t('log.pickerHint')}</Text>
 
           {pickerCoord && (
             <LocationPickerMap
@@ -999,7 +1001,7 @@ export default function CatchDetailScreen() {
                 setShowLocationPicker(false);
               }}
             >
-              <Text style={styles.pickerConfirmBtnText}>Confirmer la position</Text>
+              <Text style={styles.pickerConfirmBtnText}>{t('detail.confirmPosition')}</Text>
             </TouchableOpacity>
           </View>
         </View>

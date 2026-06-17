@@ -4,8 +4,10 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { colors } from '@/lib/theme';
+import { useSettings } from '@/contexts/SettingsContext';
 
 export default function ConnectionBadge() {
+  const { t } = useSettings();
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -26,7 +28,7 @@ export default function ConnectionBadge() {
         style={styles.icon}
       />
       <Text style={[styles.text, { color: isConnected ? colors.success : colors.warning }]}>
-        {isConnected ? 'En ligne' : 'Hors ligne'}
+        {isConnected ? t('common.online') : t('common.offline')}
       </Text>
     </View>
   );

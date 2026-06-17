@@ -12,6 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -19,6 +20,7 @@ import { colors, radius, spacing, typography } from '@/lib/theme';
 export default function LoginScreen() {
   const router = useRouter();
   const { session, initializing, cachedUserId, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
+  const { t } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
@@ -48,7 +50,7 @@ export default function LoginScreen() {
     const error = await signInWithGoogle();
     setLoading(false);
     if (error) {
-      setErrorMessage(error.message ?? 'Impossible de se connecter avec Google.');
+      setErrorMessage(error.message ?? t('login.googleError'));
     }
   };
 
@@ -59,7 +61,7 @@ export default function LoginScreen() {
     const error = await signInWithFacebook();
     setLoading(false);
     if (error) {
-      setErrorMessage(error.message ?? 'Impossible de se connecter avec Facebook.');
+      setErrorMessage(error.message ?? t('login.facebookError'));
     }
   };
 
@@ -93,7 +95,7 @@ export default function LoginScreen() {
             </View>
           </View>
           <Text style={styles.title}>PêcheLog</Text>
-          <Text style={styles.subtitle}>Votre journal de pêche intelligent</Text>
+          <Text style={styles.subtitle}>{t('login.subtitle')}</Text>
         </View>
 
         {/* Boutons OAuth */}
@@ -109,7 +111,7 @@ export default function LoginScreen() {
             ) : (
               <>
                 <Text style={styles.oauthIcon}>🔵</Text>
-                <Text style={styles.oauthButtonText}>Continuer avec Google</Text>
+                <Text style={styles.oauthButtonText}>{t('login.google')}</Text>
               </>
             )}
           </TouchableOpacity>
@@ -125,7 +127,7 @@ export default function LoginScreen() {
             ) : (
               <>
                 <Text style={styles.facebookIcon}>f</Text>
-                <Text style={styles.facebookButtonText}>Continuer avec Facebook</Text>
+                <Text style={styles.facebookButtonText}>{t('login.facebook')}</Text>
               </>
             )}
           </TouchableOpacity>
@@ -138,9 +140,10 @@ export default function LoginScreen() {
         ) : null}
 
         <Text style={styles.terms}>
-          En continuant, tu acceptes nos{' '}
-          <Text style={styles.termsLink}>Conditions d&apos;utilisation</Text> et notre{' '}
-          <Text style={styles.termsLink}>Politique de confidentialité</Text>.
+          {t('login.terms1')}
+          <Text style={styles.termsLink}>{t('login.termsLink')}</Text>
+          {t('login.terms2')}
+          <Text style={styles.termsLink}>{t('login.privacyLink')}</Text>.
         </Text>
 
         {/* ── Connexion usager de test (dev uniquement) ─────────────────── */}
