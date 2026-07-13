@@ -89,12 +89,6 @@ module.exports = {
           cameraPermission: 'PêcheLog utilise la caméra pour prendre des photos de vos prises.',
         },
       ],
-      [
-        'expo-camera',
-        {
-          cameraPermission: 'PêcheLog utilise la caméra pour prendre des photos de vos prises.',
-        },
-      ],
     ],
     experiments: {
       typedRoutes: true,

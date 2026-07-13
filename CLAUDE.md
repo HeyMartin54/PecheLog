@@ -427,9 +427,12 @@ PecheLog/
 | @react-native-community/netinfo | — | Détection réseau |
 | @nozbe/watermelondb | 0.28.0 | **Installé mais non utilisé** |
 | expo-location | — | GPS |
-| expo-image-picker | — | Photos/vidéos |
-| expo-camera | — | Caméra |
+| expo-image-picker | — | Photos/vidéos (caméra via l'app système) |
+| expo-sharing | ~14.0.0 | Partage de fichiers (carte de prise en PNG) |
 | react-native-reanimated | — | Animations |
+
+> `expo-camera` a été retiré (juillet 2026) : jamais importé dans le code — les photos passent
+> par `expo-image-picker` — et il ajoutait ~7 Mo de binaires natifs (scanner ML Kit) à l'APK.
 
 ---
 
