@@ -17,11 +17,13 @@ import ConnectionBadge from '@/components/ConnectionBadge';
 import LurePicker from '@/components/LurePicker';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
+import { loadCatchesCache } from '@/lib/catchCache';
 import { getPositionSafe } from '@/lib/locationSafe';
 import { loadLuresWithCache, type UserLure } from '@/lib/lureStorage';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
-import { fetchWithTimeout, isOnline } from '@/lib/net';
-import { enqueueOfflineCatch } from '@/lib/offlineSync';
+import { reverseGeocodeLakeName } from '@/lib/hooks/useLocation';
+import { fetchWithTimeout, isOnline, withTimeout } from '@/lib/net';
+import { enqueueOfflineCatch, getQueuedTripCatchCount } from '@/lib/offlineSync';
 import { getSpeciesConfig, SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import {
@@ -29,8 +31,10 @@ import {
   deleteTripFromHistory,
   endActiveTrip,
   loadActiveTrip,
+  generateTripId,
   loadLastCatchSettings,
   loadTripHistory,
+  saveActiveTrip,
   saveLastCatchSettings,
   savePrefillTrip,
   syncLocalTripsToSupabase,
@@ -61,6 +65,68 @@ async function fetchWeatherQuick(
   }
 }
 
+/** Nom du lac le plus proche (best-effort, null si indisponible ou hors-ligne). */
+async function fetchGpsLakeNameQuick(): Promise<string | null> {
+  try {
+    // Le reverse geocoding exige le réseau — vérifier AVANT de payer un fix GPS
+    if (!(await isOnline())) return null;
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return null;
+    const loc = await getPositionSafe();
+    if (!loc) return null;
+    return reverseGeocodeLakeName(loc.coords.latitude, loc.coords.longitude);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nombre de prises du voyage : par trip_id (+ prises en file offline).
+ * Fallback par date (Date.parse, pas de comparaison lexicographique) pour les
+ * entrées de cache écrites avant l'ajout du champ trip_id.
+ */
+async function countTripCatches(trip: Trip, userId: string | null): Promise<number | null> {
+  if (!userId) return null;
+  const queued = await getQueuedTripCatchCount(trip.id);
+  try {
+    if (await isOnline()) {
+      const { count, error } = await withTimeout(
+        supabase
+          .from('catches')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .eq('trip_id', trip.id),
+        8000,
+        'countTripCatches',
+      );
+      if (!error && typeof count === 'number') return count + queued;
+    }
+  } catch {}
+  try {
+    const cached = await loadCatchesCache(userId);
+    if (cached) {
+      const startedMs = Date.parse(trip.startedAt);
+      const inTrip = cached.filter((c) =>
+        c.trip_id !== undefined
+          ? c.trip_id === trip.id
+          : typeof c.caught_at === 'string' && Date.parse(c.caught_at) >= startedMs,
+      ).length;
+      return inTrip + queued;
+    }
+  } catch {}
+  // Pas de source fiable : au moins la file offline si elle contient des prises du voyage
+  return queued > 0 ? queued : null;
+}
+
+/** Jour calendaire du voyage (Jour 1 = jour de départ), en heure locale. */
+function tripDayNumber(startedAt: string): number {
+  const start = new Date(startedAt);
+  const now = new Date();
+  const startMidnight = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+  const nowMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return Math.max(1, Math.round((nowMidnight - startMidnight) / 86_400_000) + 1);
+}
+
 function formatTripDate(isoDate: string, locale: string): string {
   const d = new Date(isoDate);
   return d.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
@@ -78,11 +144,16 @@ export default function TripScreen() {
   const isConnected = useNetworkStatus();
 
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
+  // Miroir toujours à jour du voyage actif — lu par les callbacks en arrière-plan
+  const activeTripRef = useRef<Trip | null>(null);
+  activeTripRef.current = activeTrip;
   const [tripHistory, setTripHistory] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [quickState, setQuickState] = useState<QuickCatchState>('idle');
   const [ending, setEnding] = useState(false);
+  const [startingTrip, setStartingTrip] = useState(false);
+  const [tripCatchCount, setTripCatchCount] = useState<number | null>(null);
   const [quickSpecies, setQuickSpecies] = useState<string | null>(null);
   const [quickLure, setQuickLure] = useState<string | null>(null);
   const [userLures, setUserLures] = useState<UserLure[]>([]);
@@ -119,6 +190,11 @@ export default function TripScreen() {
             const firstSpecies = active.lakes.flatMap((l) => l.targetSpecies)[0] ?? null;
             setQuickSpecies((prev) => prev ?? firstSpecies);
             setQuickLure((prev) => prev ?? active.luresSelected[0] ?? null);
+            countTripCatches(active, user?.id ?? cachedUserId).then((count) => {
+              if (mounted) setTripCatchCount(count);
+            });
+          } else {
+            setTripCatchCount(null);
           }
           setTripHistory(history);
           setHistoryLoading(false);
@@ -127,8 +203,49 @@ export default function TripScreen() {
       refresh();
       if (user?.id) loadLuresWithCache(user.id).then(setUserLures);
       return () => { mounted = false; };
-    }, [user?.id, isConnected]),
+    }, [user?.id, cachedUserId, isConnected]),
   );
+
+  // ── Démarrage rapide : voyage créé immédiatement, lac résolu en arrière-plan ─
+  const handleQuickStartTrip = async () => {
+    if (startingTrip) return;
+    setStartingTrip(true);
+    try {
+      const trip: Trip = {
+        id: generateTripId(),
+        startedAt: new Date().toISOString(),
+        lakes: [],
+        companions: [],
+        luresSelected: [],
+      };
+      await saveActiveTrip(trip);
+      const last = await loadLastCatchSettings();
+      setActiveTrip(trip);
+      setTripCatchCount(0);
+      setQuickSpecies(last?.species ?? null);
+      setQuickLure(last?.lure ?? null);
+
+      // GPS + reverse geocoding en arrière-plan : ne bloque pas le démarrage
+      fetchGpsLakeNameQuick()
+        .then((lakeName) => {
+          if (!lakeName) return;
+          const current = activeTripRef.current;
+          // Ne mettre à jour que si CE voyage est toujours actif et toujours sans lac
+          if (!current || current.id !== trip.id || current.lakes.length > 0) return;
+          const updated: Trip = { ...current, lakes: [{ name: lakeName, targetSpecies: [] }] };
+          setActiveTrip(updated);
+          saveActiveTrip(updated).catch((e) =>
+            console.warn('[TripScreen] maj lac quick-start:', e),
+          );
+        })
+        .catch(() => {});
+    } catch (e) {
+      console.warn('[TripScreen] handleQuickStartTrip error:', e);
+      Alert.alert(t('common.error'), t('plan.startError'));
+    } finally {
+      setStartingTrip(false);
+    }
+  };
 
   const handleEndTrip = async () => {
     if (ending) return;
@@ -272,6 +389,8 @@ export default function TripScreen() {
       });
 
       setQuickState('success');
+      // Compteur inconnu (null) → le laisser inconnu plutôt que d'afficher un faux « 1 »
+      setTripCatchCount((c) => (c == null ? c : c + 1));
       if (successTimer.current) clearTimeout(successTimer.current);
       successTimer.current = setTimeout(() => setQuickState('idle'), 2500);
     } catch (e) {
@@ -303,6 +422,7 @@ export default function TripScreen() {
       {activeTrip ? (
         <ActiveTripView
           trip={activeTrip}
+          catchCount={tripCatchCount}
           quickState={quickState}
           ending={ending}
           quickSpecies={quickSpecies}
@@ -317,9 +437,25 @@ export default function TripScreen() {
         />
       ) : (
         <>
+          <TouchableOpacity
+            style={[styles.quickStartButton, startingTrip && { opacity: 0.7 }]}
+            onPress={startingTrip ? undefined : handleQuickStartTrip}
+            activeOpacity={0.85}
+          >
+            {startingTrip ? (
+              <ActivityIndicator color={colors.bg} size="small" />
+            ) : (
+              <>
+                <Ionicons name="flash" size={22} color={colors.bg} />
+                <Text style={styles.planButtonText}>{t('trip.quickStart')}</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <Text style={styles.quickStartHint}>{t('trip.quickStartHint')}</Text>
+
           <TouchableOpacity style={styles.planButton} onPress={() => router.push('/plan-trip')} activeOpacity={0.85}>
-            <Ionicons name="add-circle-outline" size={22} color={colors.bg} />
-            <Text style={styles.planButtonText}>{t('trip.plan')}</Text>
+            <Ionicons name="add-circle-outline" size={20} color={colors.accent} />
+            <Text style={styles.planButtonTextOutline}>{t('trip.plan')}</Text>
           </TouchableOpacity>
 
           {tripHistory.length === 0 && (
@@ -373,6 +509,7 @@ export default function TripScreen() {
 
 function ActiveTripView({
   trip,
+  catchCount,
   quickState,
   ending,
   quickSpecies,
@@ -386,6 +523,7 @@ function ActiveTripView({
   onEdit,
 }: {
   trip: Trip;
+  catchCount: number | null;
   quickState: QuickCatchState;
   ending: boolean;
   quickSpecies: string | null;
@@ -421,15 +559,33 @@ function ActiveTripView({
       </View>
       <Text style={styles.tripDate}>{t('trip.since', { date: formatTripDate(trip.startedAt, locale) })}</Text>
 
-      <InfoCard label={t('trip.lakes')} icon="map-outline">
-        <View style={styles.chipRow}>
-          {trip.lakes.map((lake) => (
-            <View key={lake.name} style={styles.chip}>
-              <Text style={styles.chipText}>{lake.name}</Text>
-            </View>
-          ))}
+      {/* Résumé du voyage : jour en cours + prises */}
+      <View style={styles.tripStatsRow}>
+        <View style={styles.tripStatPill}>
+          <Ionicons name="calendar-outline" size={13} color={colors.accent} />
+          <Text style={styles.tripStatText}>{t('trip.dayN', { n: tripDayNumber(trip.startedAt) })}</Text>
         </View>
-      </InfoCard>
+        {catchCount != null && (
+          <View style={styles.tripStatPill}>
+            <Ionicons name="fish-outline" size={13} color={colors.accent} />
+            <Text style={styles.tripStatText}>
+              {catchCount === 1 ? t('trip.catch1') : t('trip.catchN', { n: catchCount })}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {trip.lakes.length > 0 && (
+        <InfoCard label={t('trip.lakes')} icon="map-outline">
+          <View style={styles.chipRow}>
+            {trip.lakes.map((lake) => (
+              <View key={lake.name} style={styles.chip}>
+                <Text style={styles.chipText}>{lake.name}</Text>
+              </View>
+            ))}
+          </View>
+        </InfoCard>
+      )}
 
       {trip.companions.length > 0 && (
         <InfoCard label={t('trip.companions')} icon="people-outline">
@@ -642,8 +798,8 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
   },
 
-  // Plan button
-  planButton: {
+  // Quick start (action principale)
+  quickStartButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -652,11 +808,65 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     paddingVertical: spacing.lg,
     paddingHorizontal: spacing.xl,
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  quickStartHint: {
+    ...typography.bodySmall,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+
+  // Plan button (action secondaire)
+  planButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.accent + '50',
+    borderRadius: radius.lg,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.xl,
   },
   planButtonText: {
     ...typography.h3,
     color: colors.bg,
     fontWeight: '700',
+  },
+  planButtonTextOutline: {
+    ...typography.h3,
+    color: colors.accent,
+    fontWeight: '700',
+  },
+
+  // Trip stats (voyage actif)
+  tripStatsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  tripStatPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.accentSubtle,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.accent + '40',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  tripStatText: {
+    ...typography.bodySmall,
+    color: colors.accent,
+    fontWeight: '600',
   },
 
   // Section label
@@ -705,7 +915,7 @@ const styles = StyleSheet.create({
   tripDate: {
     ...typography.bodySmall,
     color: colors.textMuted,
-    marginBottom: spacing.lg,
+    marginBottom: spacing.sm,
   },
 
   // Info card

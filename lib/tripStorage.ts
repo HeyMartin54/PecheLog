@@ -36,6 +36,11 @@ const HISTORY_MAX = 20;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Génère un identifiant de voyage — format unique partagé par tous les écrans. */
+export function generateTripId(): string {
+  return `trip_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+}
+
 /** Retourne l'ID utilisateur depuis la session locale (pas de requête réseau). */
 async function getCurrentUserId(): Promise<string | null> {
   try {

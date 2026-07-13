@@ -27,11 +27,16 @@ import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import {
+  DEFAULT_MAP_CENTER,
+  DEFAULT_QUICK_ZONE_RADIUS_IDX,
+  QUICK_ZONE_RADII,
   createZone,
   deleteZone,
   fetchZoneCatches,
+  formatRadius,
   leaveZone,
   loadZones,
+  makeCirclePolygon,
   pointInPolygon,
   redeemZoneCode,
   type SharedZone,
@@ -181,6 +186,8 @@ export default function MapScreen() {
   const insets = useSafeAreaInsets();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapRef = useRef<any>(null);
+  // Dernière région affichée — sert de centre au mode « Zone rapide »
+  const lastRegionRef = useRef<Region | null>(null);
 
   const { getColor } = useSpeciesColors();
 
@@ -201,7 +208,12 @@ export default function MapScreen() {
   const [zoneCatches, setZoneCatches] = useState<CatchPin[]>([]);
   const [zoneLoading, setZoneLoading] = useState(false);
   const [drawing, setDrawing] = useState(false);
+  const [drawMode, setDrawMode] = useState<'points' | 'circle'>('points');
+  const [circleCenter, setCircleCenter] = useState<ZonePoint | null>(null);
+  const [circleRadiusIdx, setCircleRadiusIdx] = useState(DEFAULT_QUICK_ZONE_RADIUS_IDX);
   const [draftPoints, setDraftPoints] = useState<ZonePoint[]>([]);
+  // Sauvegarde du tracé manuel pendant un passage en mode cercle (bascule non destructive)
+  const manualPointsRef = useRef<ZonePoint[]>([]);
   const [showNameModal, setShowNameModal] = useState(false);
   const [zoneName, setZoneName] = useState('');
   const [savingZone, setSavingZone] = useState(false);
@@ -329,12 +341,62 @@ export default function MapScreen() {
     setOpenPanel(null);
     setSelectedCatch(null);
     setDraftPoints([]);
+    manualPointsRef.current = [];
+    setDrawMode('points');
+    setCircleCenter(null);
     setDrawing(true);
+  };
+
+  /** Centre actuel de la vue — getCamera est fiable même avant le premier
+   *  onRegionChangeComplete (carte encore en cours d'animation). */
+  const resolveMapCenter = async (): Promise<ZonePoint> => {
+    try {
+      const cam = await mapRef.current?.getCamera();
+      if (cam?.center?.latitude != null && cam?.center?.longitude != null) {
+        return { latitude: cam.center.latitude, longitude: cam.center.longitude };
+      }
+    } catch {}
+    const r = lastRegionRef.current;
+    return r ? { latitude: r.latitude, longitude: r.longitude } : DEFAULT_MAP_CENTER;
+  };
+
+  // Zone rapide : cercle ajustable centré sur la vue actuelle de la carte
+  const startQuickZone = async () => {
+    setOpenPanel(null);
+    setSelectedCatch(null);
+    manualPointsRef.current = [];
+    const center = await resolveMapCenter();
+    setDrawMode('circle');
+    moveCircle(center, circleRadiusIdx);
+    setDrawing(true);
+  };
+
+  const moveCircle = (center: ZonePoint, radiusIdx: number) => {
+    setCircleCenter(center);
+    setCircleRadiusIdx(radiusIdx);
+    setDraftPoints(makeCirclePolygon(center, QUICK_ZONE_RADII[radiusIdx]));
+  };
+
+  // Bascule non destructive : le tracé manuel est sauvegardé puis restauré
+  const switchToCircleMode = async () => {
+    if (drawMode === 'circle') return;
+    manualPointsRef.current = draftPoints;
+    const center = circleCenter ?? (await resolveMapCenter());
+    setDrawMode('circle');
+    moveCircle(center, circleRadiusIdx);
+  };
+
+  const switchToPointsMode = () => {
+    if (drawMode === 'points') return;
+    setDrawMode('points');
+    setDraftPoints(manualPointsRef.current);
   };
 
   const cancelDrawing = () => {
     setDrawing(false);
     setDraftPoints([]);
+    manualPointsRef.current = [];
+    setCircleCenter(null);
     setZoneName('');
     setShowNameModal(false);
   };
@@ -352,6 +414,7 @@ export default function MapScreen() {
       setShowNameModal(false);
       setDrawing(false);
       setDraftPoints([]);
+      setCircleCenter(null);
       setZoneName('');
       await refreshZones();
       setMapSource(zone.id);
@@ -656,9 +719,14 @@ export default function MapScreen() {
               </View>
             ))
           )}
-          <TouchableOpacity style={styles.drawZoneBtn} onPress={startDrawing} activeOpacity={0.85}>
-            <Text style={styles.drawZoneBtnText}>{t('zones.draw')}</Text>
-          </TouchableOpacity>
+          <View style={styles.drawButtonsPair}>
+            <TouchableOpacity style={[styles.drawZoneBtn, { flex: 1 }]} onPress={startQuickZone} activeOpacity={0.85}>
+              <Text style={styles.drawZoneBtnText}>{t('zones.quickZone')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.drawZoneBtn, { flex: 1 }]} onPress={startDrawing} activeOpacity={0.85}>
+              <Text style={styles.drawZoneBtnText}>{t('zones.draw')}</Text>
+            </TouchableOpacity>
+          </View>
 
           {receivedZones.length > 0 && (
             <>
@@ -851,12 +919,20 @@ export default function MapScreen() {
         onPress={(e) => {
           if (drawing) {
             const { latitude, longitude } = e.nativeEvent.coordinate;
-            setDraftPoints((prev) => [...prev, { latitude, longitude }]);
+            if (drawMode === 'circle') {
+              // Zone rapide : toucher la carte déplace le cercle
+              moveCircle({ latitude, longitude }, circleRadiusIdx);
+            } else {
+              setDraftPoints((prev) => [...prev, { latitude, longitude }]);
+            }
           } else {
             setSelectedCatch(null);
           }
         }}
-        onRegionChangeComplete={(r) => setMapDeltas({ lat: r.latitudeDelta, lng: r.longitudeDelta })}
+        onRegionChangeComplete={(r) => {
+          lastRegionRef.current = r;
+          setMapDeltas({ lat: r.latitudeDelta, lng: r.longitudeDelta });
+        }}
       >
         {/* Polygone de la zone affichée */}
         {activeZone && activeZone.polygon.length >= 3 && (
@@ -877,15 +953,40 @@ export default function MapScreen() {
             fillColor="rgba(0,230,181,0.15)"
           />
         )}
-        {drawing && draftPoints.map((p, idx) => (
+        {/* Mode points : sommets déplaçables par glisser */}
+        {drawing && drawMode === 'points' && draftPoints.map((p, idx) => (
           <TrackedMarker
             key={`draft-${idx}`}
             coordinate={p}
             anchor={{ x: 0.5, y: 0.5 }}
+            draggable
+            onDragEnd={(e) => {
+              const { latitude, longitude } = e.nativeEvent.coordinate;
+              setDraftPoints((prev) => prev.map((pt, i) => (i === idx ? { latitude, longitude } : pt)));
+            }}
           >
             <View style={styles.draftVertex} />
           </TrackedMarker>
         ))}
+        {/* Mode cercle : centre déplaçable par glisser */}
+        {drawing && drawMode === 'circle' && circleCenter && (
+          <TrackedMarker
+            key="circle-center"
+            coordinate={circleCenter}
+            anchor={{ x: 0.5, y: 0.5 }}
+            draggable
+            onDragEnd={(e) => {
+              const { latitude, longitude } = e.nativeEvent.coordinate;
+              moveCircle({ latitude, longitude }, circleRadiusIdx);
+            }}
+          >
+            {/* Vues simples uniquement (pas de glyphe de police) : la capture bitmap
+                Android rogne les vues custom complexes — cf. mémoire projet marqueurs */}
+            <View style={styles.circleCenterMarker}>
+              <View style={styles.circleCenterDot} />
+            </View>
+          </TrackedMarker>
+        )}
         {clusters.map((cluster) => {
           const isCluster = cluster.catches.length > 1;
 
@@ -1120,23 +1221,75 @@ export default function MapScreen() {
       {/* Barre d'outils du mode dessin */}
       {drawing && (
         <View style={[styles.drawToolbar, { bottom: 24 }]}>
+          {/* Bascule Points / Cercle */}
+          <View style={styles.drawModeRow}>
+            <TouchableOpacity
+              style={[styles.drawModeBtn, drawMode === 'points' && styles.drawModeBtnActive]}
+              onPress={switchToPointsMode}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.drawModeText, drawMode === 'points' && styles.drawModeTextActive]}>
+                {t('zones.modePoints')}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.drawModeBtn, drawMode === 'circle' && styles.drawModeBtnActive]}
+              onPress={switchToCircleMode}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.drawModeText, drawMode === 'circle' && styles.drawModeTextActive]}>
+                {t('zones.modeCircle')}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
           <Text style={styles.drawHint}>
-            {draftPoints.length < 3
-              ? t('zones.drawMin')
-              : t('zones.drawHint', { n: draftPoints.length })}
+            {drawMode === 'circle'
+              ? t('zones.quickZoneHint')
+              : draftPoints.length < 3
+                ? t('zones.drawMin')
+                : t('zones.drawHint', { n: draftPoints.length })}
           </Text>
+
+          {/* Contrôle du rayon (mode cercle) */}
+          {drawMode === 'circle' && (
+            <View style={styles.radiusRow}>
+              <TouchableOpacity
+                style={[styles.radiusBtn, circleRadiusIdx === 0 && { opacity: 0.4 }]}
+                onPress={() => { if (circleRadiusIdx > 0 && circleCenter) moveCircle(circleCenter, circleRadiusIdx - 1); }}
+                disabled={circleRadiusIdx === 0}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="remove" size={18} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <Text style={styles.radiusLabel}>
+                {t('zones.radius', { r: formatRadius(QUICK_ZONE_RADII[circleRadiusIdx]) })}
+              </Text>
+              <TouchableOpacity
+                style={[styles.radiusBtn, circleRadiusIdx === QUICK_ZONE_RADII.length - 1 && { opacity: 0.4 }]}
+                onPress={() => { if (circleRadiusIdx < QUICK_ZONE_RADII.length - 1 && circleCenter) moveCircle(circleCenter, circleRadiusIdx + 1); }}
+                disabled={circleRadiusIdx === QUICK_ZONE_RADII.length - 1}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="add" size={18} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+          )}
+
           <View style={styles.drawButtonsRow}>
             <TouchableOpacity style={styles.drawCancelBtn} onPress={cancelDrawing} activeOpacity={0.8}>
               <Text style={styles.drawCancelText}>{t('common.cancel')}</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.drawUndoBtn, draftPoints.length === 0 && { opacity: 0.4 }]}
-              onPress={() => setDraftPoints((prev) => prev.slice(0, -1))}
-              disabled={draftPoints.length === 0}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="arrow-undo-outline" size={15} color={colors.textPrimary} />
-            </TouchableOpacity>
+            {drawMode === 'points' && (
+              <TouchableOpacity
+                style={[styles.drawUndoBtn, draftPoints.length === 0 && { opacity: 0.4 }]}
+                onPress={() => setDraftPoints((prev) => prev.slice(0, -1))}
+                disabled={draftPoints.length === 0}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="arrow-undo-outline" size={15} color={colors.textPrimary} />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[styles.drawFinishBtn, draftPoints.length < 3 && { opacity: 0.4 }]}
               onPress={() => setShowNameModal(true)}
@@ -1386,6 +1539,74 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT,
     borderWidth: 2,
     borderColor: '#fff',
+  },
+  circleCenterMarker: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: ACCENT,
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  circleCenterDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#fff',
+  },
+  drawButtonsPair: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  drawModeRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  drawModeBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: 'transparent',
+  },
+  drawModeBtnActive: {
+    borderColor: ACCENT,
+    backgroundColor: 'rgba(0,230,181,0.12)',
+  },
+  drawModeText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  drawModeTextActive: {
+    color: ACCENT,
+  },
+  radiusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  radiusBtn: {
+    width: 40,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surface2,
+  },
+  radiusLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    minWidth: 110,
+    textAlign: 'center',
   },
   zoneRow: {
     flexDirection: 'row',

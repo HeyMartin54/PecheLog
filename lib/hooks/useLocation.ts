@@ -91,7 +91,12 @@ export function useLocation(): UseLocationResult {
   };
 }
 
-async function reverseGeocodeLakeName(
+/**
+ * Nom du plan d'eau le plus proche via Nominatim (null si introuvable/hors-ligne).
+ * Helper PARTAGÉ — utilisé par le formulaire de prise, la planification de voyage
+ * et le démarrage rapide : ne pas dupliquer cette logique.
+ */
+export async function reverseGeocodeLakeName(
   latitude: number,
   longitude: number,
 ): Promise<string | null> {

@@ -225,7 +225,7 @@ const fr: Dict = {
   'zones.ownZone': 'Cette zone est déjà à toi.',
   'zones.offline': 'Connexion requise pour cette action.',
   'zones.error': 'Une erreur est survenue. Réessaie.',
-  'zones.drawHint': 'Touche la carte pour ajouter des points ({n} point(s))',
+  'zones.drawHint': '{n} point(s) — touche pour ajouter, glisse un point pour ajuster',
   'zones.drawMin': 'Ajoute au moins 3 points pour fermer la zone',
   'zones.undo': 'Annuler le dernier',
   'zones.finish': 'Terminer',
@@ -236,6 +236,11 @@ const fr: Dict = {
   'zones.sharedBadge': 'Zone partagée : {name}',
   'zones.zoneEmpty': 'Aucune prise dans cette zone pour le moment.',
   'zones.code': 'Code : {code}',
+  'zones.quickZone': '⭕ Zone rapide',
+  'zones.quickZoneHint': 'Touche la carte pour déplacer le cercle, puis ajuste le rayon',
+  'zones.radius': 'Rayon : {r}',
+  'zones.modePoints': '✏️ Points',
+  'zones.modeCircle': '⭕ Cercle',
 
   // ── Statistiques ──
   'stats.title': 'Statistiques',
@@ -263,6 +268,7 @@ const fr: Dict = {
   'stats.longest': 'Plus long',
   'stats.trophies': 'Trophées',
   'stats.bestDay': 'Meilleure sortie',
+  'stats.noData': 'Aucune donnée pour cette période',
 
   // ── Voyages ──
   'trip.title': 'Voyage de pêche',
@@ -290,6 +296,11 @@ const fr: Dict = {
   'trip.gpsNotFound': 'Position GPS introuvable. Réessaie dans quelques secondes.',
   'trip.missingSpeciesTitle': 'Espèce manquante',
   'trip.missingSpeciesBody': 'Sélectionne une espèce dans la section "Prise rapide" de ton voyage.',
+  'trip.quickStart': '⚡ Démarrer maintenant',
+  'trip.quickStartHint': 'Voyage créé instantanément — lac détecté par GPS, détails modifiables ensuite.',
+  'trip.dayN': 'Jour {n}',
+  'trip.catch1': '1 prise ce voyage',
+  'trip.catchN': '{n} prises ce voyage',
 
   // ── Planifier un voyage ──
   'plan.editTitle': 'Modifier le voyage',
@@ -624,7 +635,7 @@ const en: Dict = {
   'zones.ownZone': 'This zone is already yours.',
   'zones.offline': 'A connection is required for this action.',
   'zones.error': 'Something went wrong. Try again.',
-  'zones.drawHint': 'Tap the map to add points ({n} point(s))',
+  'zones.drawHint': '{n} point(s) — tap to add, drag a point to adjust',
   'zones.drawMin': 'Add at least 3 points to close the zone',
   'zones.undo': 'Undo last',
   'zones.finish': 'Finish',
@@ -635,6 +646,11 @@ const en: Dict = {
   'zones.sharedBadge': 'Shared zone: {name}',
   'zones.zoneEmpty': 'No catches in this zone yet.',
   'zones.code': 'Code: {code}',
+  'zones.quickZone': '⭕ Quick zone',
+  'zones.quickZoneHint': 'Tap the map to move the circle, then adjust the radius',
+  'zones.radius': 'Radius: {r}',
+  'zones.modePoints': '✏️ Points',
+  'zones.modeCircle': '⭕ Circle',
 
   // ── Stats ──
   'stats.title': 'Statistics',
@@ -662,6 +678,7 @@ const en: Dict = {
   'stats.longest': 'Longest',
   'stats.trophies': 'Trophies',
   'stats.bestDay': 'Best outing',
+  'stats.noData': 'No data for this period',
 
   // ── Trips ──
   'trip.title': 'Fishing trip',
@@ -689,6 +706,11 @@ const en: Dict = {
   'trip.gpsNotFound': 'GPS position not found. Try again in a few seconds.',
   'trip.missingSpeciesTitle': 'Missing species',
   'trip.missingSpeciesBody': 'Select a species in the "Quick catch" section of your trip.',
+  'trip.quickStart': '⚡ Start now',
+  'trip.quickStartHint': 'Trip created instantly — lake detected via GPS, details editable later.',
+  'trip.dayN': 'Day {n}',
+  'trip.catch1': '1 catch this trip',
+  'trip.catchN': '{n} catches this trip',
 
   // ── Plan a trip ──
   'plan.editTitle': 'Edit trip',

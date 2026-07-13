@@ -20,13 +20,15 @@ export type CachedCatch = {
   speed_kmh: number | null;
   notes: string | null;
   caught_at: string;
+  // Optionnel : absent des caches écrits avant l'ajout du champ
+  trip_id?: string | null;
 };
 
 // Champs à sélectionner dans Supabase pour populer un cache complet
 export const CATCH_SELECT_ALL =
   'id, species, latitude, longitude, lake_name, lure, weight_lbs, length_inches, ' +
   'depth_meters, depth_source, size_category, weather_conditions, temperature_c, ' +
-  'wind_speed_kmh, wind_direction_deg, speed_kmh, notes, caught_at';
+  'wind_speed_kmh, wind_direction_deg, speed_kmh, notes, caught_at, trip_id';
 
 const cacheKey  = (userId: string) => `catches_cache_${userId}`;
 const metaKey   = (userId: string) => `catches_cache_meta_${userId}`;
