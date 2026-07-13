@@ -8,6 +8,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -22,6 +23,8 @@ import { Ionicons } from '@expo/vector-icons';
 import LocationPickerMap from '@/components/LocationPickerMap';
 import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
+import ShareCatchCard from '@/components/ShareCatchCard';
+import { buildCatchShareMessage, shareCatchText } from '@/lib/shareCatch';
 import { fetchWithTimeout } from '@/lib/net';
 import { supabase } from '@/lib/supabase';
 import { uploadMediaFile } from '@/lib/uploadMedia';
@@ -175,6 +178,12 @@ export default function CatchDetailScreen() {
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const editParamConsumed = useRef(false);
+
+  // Partage
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareIncludeCoords, setShareIncludeCoords] = useState(false);
+  const [sharingImage, setSharingImage] = useState(false);
+  const shareCardRef = useRef<View>(null);
 
   // Editable fields
   const [species, setSpecies] = useState('');
@@ -551,6 +560,54 @@ export default function CatchDetailScreen() {
       router.push(`/catch-detail?id=${data.id}&edit=1`);
     } finally {
       setDuplicating(false);
+    }
+  }
+
+  // Première photo de la prise, pour la carte visuelle de partage
+  const sharePhotoUri = (() => {
+    const photo = mediaItems.find((m) => m.media_type === 'photo');
+    if (!photo) return null;
+    if (photo.uploaded) {
+      return supabase.storage.from('catch-media').getPublicUrl(photo.storage_path).data.publicUrl;
+    }
+    return photo.local_uri;
+  })();
+
+  async function handleShareText() {
+    if (!catch_) return;
+    const message = buildCatchShareMessage(catch_, {
+      t,
+      locale,
+      fmtTemp,
+      fmtWeight,
+      fmtLength,
+      includeCoords: shareIncludeCoords,
+    });
+    await shareCatchText(message, t('share.copied'));
+  }
+
+  async function handleShareImage() {
+    if (sharingImage) return;
+    setSharingImage(true);
+    try {
+      // Imports paresseux : view-shot n'a pas d'implémentation web et ce
+      // handler n'est accessible que sur mobile.
+      const { captureRef } = require('react-native-view-shot');
+      const Sharing = require('expo-sharing');
+      const uri: string = await captureRef(shareCardRef, { format: 'png', quality: 1 });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri.startsWith('file://') ? uri : `file://${uri}`, {
+          mimeType: 'image/png',
+          dialogTitle: t('share.title'),
+        });
+      } else {
+        await handleShareText();
+      }
+    } catch (e) {
+      console.warn('[CatchDetail] Erreur partage image', e);
+      Alert.alert(t('common.error'), t('share.error'));
+    } finally {
+      setSharingImage(false);
     }
   }
 
@@ -986,6 +1043,16 @@ export default function CatchDetailScreen() {
           </TouchableOpacity>
         )}
 
+        {!editing && !confirmDelete && (
+          <TouchableOpacity
+            style={styles.shareBtn}
+            onPress={() => setShowShareModal(true)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.shareBtnText}>{t('share.button')}</Text>
+          </TouchableOpacity>
+        )}
+
         {!editing && !confirmDelete && !fromCache && (
           <TouchableOpacity
             style={styles.duplicateBtn}
@@ -1033,6 +1100,75 @@ export default function CatchDetailScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* Modal de partage de la prise */}
+      <Modal
+        visible={showShareModal}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowShareModal(false)}
+      >
+        <View style={styles.pickerContainer}>
+          <View style={[styles.pickerHeader, { paddingTop: insets.top + 12 }]}>
+            <TouchableOpacity onPress={() => setShowShareModal(false)}>
+              <Text style={styles.backBtnText}>{t('detail.back')}</Text>
+            </TouchableOpacity>
+            <Text style={styles.pickerHeaderTitle}>{t('share.title')}</Text>
+            <View style={{ width: 70 }} />
+          </View>
+
+          <ScrollView
+            contentContainerStyle={[styles.shareModalContent, { paddingBottom: 24 + insets.bottom }]}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Aperçu de la carte — capturé tel quel en image */}
+            <View ref={shareCardRef} collapsable={false}>
+              <ShareCatchCard
+                catch_={catch_}
+                photoUri={sharePhotoUri}
+                includeCoords={shareIncludeCoords}
+              />
+            </View>
+
+            {/* Option coordonnées GPS */}
+            <View style={styles.shareCoordsRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.shareCoordsLabel}>{t('share.includeCoords')}</Text>
+                <Text style={styles.shareCoordsHint}>{t('share.coordsHint')}</Text>
+              </View>
+              <Switch
+                value={shareIncludeCoords}
+                onValueChange={setShareIncludeCoords}
+                trackColor={{ false: colors.surface2, true: colors.accentStrong }}
+                thumbColor={shareIncludeCoords ? ACCENT : TEXT_MUTED}
+              />
+            </View>
+
+            {/* Actions de partage */}
+            {!isWeb && (
+              <TouchableOpacity
+                style={styles.shareActionPrimary}
+                onPress={handleShareImage}
+                disabled={sharingImage}
+                activeOpacity={0.85}
+              >
+                {sharingImage ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.shareActionPrimaryText}>🖼 {t('share.image')}</Text>
+                )}
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.shareActionSecondary}
+              onPress={handleShareText}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.shareActionSecondaryText}>💬 {t('share.text')}</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </Modal>
 
       {/* Modal sélection GPS — mobile uniquement */}
       <Modal visible={!isWeb && showLocationPicker} animationType="slide" statusBarTranslucent>
@@ -1436,6 +1572,18 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '500',
   },
+  shareBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: ACCENT,
+  },
+  shareBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
   duplicateBtn: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1589,6 +1737,64 @@ const styles = StyleSheet.create({
   cardMapEditBtnText: {
     color: '#fff',
     fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // Modal de partage
+  shareModalContent: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    gap: 16,
+  },
+  shareCoordsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: 320,
+    backgroundColor: CARD_BG,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  shareCoordsLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+  },
+  shareCoordsHint: {
+    fontSize: 12,
+    color: TEXT_MUTED,
+    marginTop: 2,
+  },
+  shareActionPrimary: {
+    width: 320,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: ACCENT,
+  },
+  shareActionPrimaryText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  shareActionSecondary: {
+    width: 320,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: ACCENT,
+    backgroundColor: colors.accentSubtle,
+  },
+  shareActionSecondaryText: {
+    color: ACCENT,
+    fontSize: 15,
     fontWeight: '600',
   },
 
