@@ -41,6 +41,45 @@ export function pointInPolygon(point: ZonePoint, polygon: ZonePoint[]): boolean 
   return inside;
 }
 
+/**
+ * Génère un polygone circulaire (approx. par segments) autour d'un centre.
+ * Utilisé par le mode « Zone rapide » : un cercle ajustable autour d'un lac/secteur.
+ */
+export function makeCirclePolygon(
+  center: ZonePoint,
+  radiusMeters: number,
+  segments = 24,
+): ZonePoint[] {
+  const points: ZonePoint[] = [];
+  const dLat = radiusMeters / 111320; // ~mètres par degré de latitude
+  const cosLat = Math.cos((center.latitude * Math.PI) / 180);
+  const dLng = radiusMeters / (111320 * (Math.abs(cosLat) < 0.01 ? 0.01 : cosLat));
+  for (let i = 0; i < segments; i++) {
+    const angle = (2 * Math.PI * i) / segments;
+    points.push({
+      latitude: center.latitude + dLat * Math.sin(angle),
+      longitude: center.longitude + dLng * Math.cos(angle),
+    });
+  }
+  return points;
+}
+
+/** Paliers de rayon (m) pour le mode « Zone rapide ». */
+export const QUICK_ZONE_RADII = [100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000];
+
+/** Index du rayon par défaut (500 m) — indépendant de l'ordre des paliers. */
+export const DEFAULT_QUICK_ZONE_RADIUS_IDX = Math.max(0, QUICK_ZONE_RADII.indexOf(500));
+
+/** Centre de secours (Québec) quand la vue de la carte est encore inconnue. */
+export const DEFAULT_MAP_CENTER: ZonePoint = { latitude: 47.5, longitude: -71.5 };
+
+/** Formatte un rayon en m/km pour l'affichage (métrique dans les deux langues). */
+export function formatRadius(radiusMeters: number): string {
+  if (radiusMeters < 1000) return `${radiusMeters} m`;
+  const km = radiusMeters / 1000;
+  return `${Number.isInteger(km) ? km : km.toFixed(1)} km`;
+}
+
 // ─── Cache local (lecture hors-ligne) ────────────────────────────────────────
 
 const zonesCacheKey = (userId: string) => `@pechelog_zones_${userId}`;

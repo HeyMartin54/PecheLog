@@ -72,6 +72,19 @@ export async function getOfflineQueueCount(): Promise<number> {
   }
 }
 
+/** Nombre de prises en attente dans la file appartenant à un voyage donné. */
+export async function getQueuedTripCatchCount(tripId: string): Promise<number> {
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+    if (!raw) return 0;
+    const queue: OfflineQueuedCatch[] = JSON.parse(raw);
+    if (!Array.isArray(queue)) return 0;
+    return queue.filter((item) => item?.payload?.trip_id === tripId).length;
+  } catch {
+    return 0;
+  }
+}
+
 // ─── Météo historique (pour enrichir les prises hors-ligne à la sync) ─────────
 
 function wmoCodeToCondition(code: number): string {

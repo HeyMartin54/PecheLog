@@ -25,8 +25,9 @@ import {
   type UserLure,
 } from '@/lib/lureStorage';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
+import { reverseGeocodeLakeName } from '@/lib/hooks/useLocation';
 import { getPositionSafe } from '@/lib/locationSafe';
-import { fetchWithTimeout, isOnline } from '@/lib/net';
+import { isOnline } from '@/lib/net';
 import { SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { useAuth } from '@/contexts/AuthContext';
@@ -34,16 +35,13 @@ import { useSettings } from '@/contexts/SettingsContext';
 import {
   addFrequentCompanions,
   clearPrefillTrip,
+  generateTripId,
   loadActiveTrip,
   loadFrequentCompanions,
   loadPrefillTrip,
   saveActiveTrip,
   type TripLake,
 } from '@/lib/tripStorage';
-
-function generateId(): string {
-  return `trip_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
-}
 
 export default function PlanTripScreen() {
   const router = useRouter();
@@ -70,6 +68,8 @@ export default function PlanTripScreen() {
   // Preserved from the active trip in edit mode
   const [editTripId, setEditTripId] = useState<string | null>(null);
   const [editTripStartedAt, setEditTripStartedAt] = useState<string | null>(null);
+  // Le voyage édité avait-il déjà au moins un lac ? (garde « lac requis »)
+  const [editHadLakes, setEditHadLakes] = useState(false);
 
   const companionInputRef = useRef<TextInput>(null);
 
@@ -89,6 +89,7 @@ export default function PlanTripScreen() {
         if (activeTrip) {
           setEditTripId(activeTrip.id);
           setEditTripStartedAt(activeTrip.startedAt);
+          setEditHadLakes(activeTrip.lakes.some((l) => l.name.trim().length > 0));
           setLakes(activeTrip.lakes.length > 0 ? activeTrip.lakes : [{ name: '', targetSpecies: [] }]);
           setCompanions(activeTrip.companions);
           setLuresSelected(activeTrip.luresSelected);
@@ -118,18 +119,13 @@ export default function PlanTripScreen() {
       // Try reverse geocoding for a lake name (seulement si en ligne)
       try {
         if (!(await isOnline())) { setLocationLoading(false); return; }
-        const url = `https://nominatim.openstreetmap.org/reverse?lat=${loc.coords.latitude}&lon=${loc.coords.longitude}&format=json&zoom=14`;
-        const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'PecheLog/1.0' } }, 8000);
-        if (res.ok) {
-          const data = await res.json();
-          const name = data?.address?.water || data?.address?.lake || data?.address?.reservoir || null;
-          if (name) {
-            setLakes((prev) => {
-              const updated = [...prev];
-              if (updated[0].name === '') updated[0] = { ...updated[0], name };
-              return updated;
-            });
-          }
+        const name = await reverseGeocodeLakeName(loc.coords.latitude, loc.coords.longitude);
+        if (name) {
+          setLakes((prev) => {
+            const updated = [...prev];
+            if (updated[0].name === '') updated[0] = { ...updated[0], name };
+            return updated;
+          });
         }
       } catch {}
     } catch {}
@@ -198,8 +194,19 @@ export default function PlanTripScreen() {
   // ── Save ────────────────────────────────────────────────────────────────────
 
   const handleStart = async () => {
+    // Le voyage actif a disparu (terminé sur un autre appareil ?) — ne pas en
+    // recréer un nouveau par accident depuis l'écran d'édition.
+    if (isEditMode && !editTripId) {
+      Alert.alert(t('common.error'), t('plan.editError'));
+      router.back();
+      return;
+    }
+
     const validLakes = lakes.filter((l) => l.name.trim());
-    if (validLakes.length === 0) {
+    // Lac requis, SAUF en édition d'un voyage qui n'en avait déjà pas
+    // (démarrage rapide sans GPS) — on n'exige pas d'en ajouter un.
+    const allowEmptyLakes = isEditMode && !editHadLakes;
+    if (validLakes.length === 0 && !allowEmptyLakes) {
       Alert.alert(t('plan.lakeRequiredTitle'), t('plan.lakeRequiredBody'));
       return;
     }
@@ -208,7 +215,7 @@ export default function PlanTripScreen() {
     try {
       await addFrequentCompanions(companions);
       await saveActiveTrip({
-        id: isEditMode && editTripId ? editTripId : generateId(),
+        id: isEditMode && editTripId ? editTripId : generateTripId(),
         startedAt: isEditMode && editTripStartedAt ? editTripStartedAt : new Date().toISOString(),
         lakes: validLakes,
         companions,

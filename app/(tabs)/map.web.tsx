@@ -10,11 +10,16 @@ import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import {
+  DEFAULT_MAP_CENTER,
+  DEFAULT_QUICK_ZONE_RADIUS_IDX,
+  QUICK_ZONE_RADII,
   createZone,
   deleteZone,
   fetchZoneCatches,
+  formatRadius,
   leaveZone,
   loadZones,
+  makeCirclePolygon,
   pointInPolygon,
   redeemZoneCode,
   type SharedZone,
@@ -29,7 +34,6 @@ let Marker: any = null;
 let Popup: any = null;
 let useMap: any = null;
 let Polygon: any = null;
-let CircleMarker: any = null;
 
 if (typeof window !== 'undefined') {
   const RL = require('react-leaflet');
@@ -39,7 +43,6 @@ if (typeof window !== 'undefined') {
   Popup = RL.Popup;
   useMap = RL.useMap;
   Polygon = RL.Polygon;
-  CircleMarker = RL.CircleMarker;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -167,6 +170,38 @@ function makeClusterIcon(speciesCounts: Record<string, number>, getColor: (s: st
   return L.divIcon({ className: '', html, iconSize: [44, 44], iconAnchor: [22, 22] });
 }
 
+// Icônes de dessin mémoïsées au niveau module (la couleur d'accent est constante) :
+// recréer un divIcon par render forcerait react-leaflet à re-setter le DOM de chaque marqueur.
+let draftVertexIcon: any;
+function getVertexIcon(accent: string) {
+  if (typeof window === 'undefined') return undefined;
+  if (!draftVertexIcon) {
+    const L = require('leaflet');
+    draftVertexIcon = L.divIcon({
+      className: '',
+      html: `<div style="width:14px;height:14px;border-radius:50%;background:${accent};border:2px solid #fff;cursor:grab;box-sizing:border-box;"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+    });
+  }
+  return draftVertexIcon;
+}
+
+let circleCenterIcon: any;
+function getCircleCenterIcon(accent: string) {
+  if (typeof window === 'undefined') return undefined;
+  if (!circleCenterIcon) {
+    const L = require('leaflet');
+    circleCenterIcon = L.divIcon({
+      className: '',
+      html: `<div style="width:28px;height:28px;border-radius:50%;background:${accent};border:2px solid #fff;display:flex;align-items:center;justify-content:center;cursor:grab;font-size:14px;color:#06141F;box-sizing:border-box;">✥</div>`,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+  }
+  return circleCenterIcon;
+}
+
 function makeIcon(color: string) {
   if (typeof window === 'undefined') return undefined;
   const L = require('leaflet');
@@ -242,7 +277,17 @@ export default function MapScreen() {
   const [zoneCatches, setZoneCatches] = useState<CatchPin[]>([]);
   const [zoneLoading, setZoneLoading] = useState(false);
   const [drawing, setDrawing] = useState(false);
+  const [drawMode, setDrawMode] = useState<'points' | 'circle'>('points');
+  const [circleCenter, setCircleCenter] = useState<ZonePoint | null>(null);
+  const [circleRadiusIdx, setCircleRadiusIdx] = useState(DEFAULT_QUICK_ZONE_RADIUS_IDX);
   const [draftPoints, setDraftPoints] = useState<ZonePoint[]>([]);
+  // Sauvegarde du tracé manuel pendant un passage en mode cercle (bascule non destructive)
+  const manualPointsRef = useRef<ZonePoint[]>([]);
+  // Miroirs toujours frais pour le handler de clic Leaflet (attaché une fois par session de dessin)
+  const drawModeRef = useRef(drawMode);
+  drawModeRef.current = drawMode;
+  const circleRadiusIdxRef = useRef(circleRadiusIdx);
+  circleRadiusIdxRef.current = circleRadiusIdx;
   const [showNameModal, setShowNameModal] = useState(false);
   const [zoneName, setZoneName] = useState('');
   const [savingZone, setSavingZone] = useState(false);
@@ -327,11 +372,20 @@ export default function MapScreen() {
   useEffect(() => {
     const map = leafletMapRef.current;
     if (!map || !drawing) return;
+    // Handler stable (attaché une seule fois par session de dessin) : le mode et
+    // le rayon sont lus via des refs pour éviter closures périmées et ré-attachements.
     const handler = (e: any) => {
-      setDraftPoints((prev) => [...prev, { latitude: e.latlng.lat, longitude: e.latlng.lng }]);
+      const point = { latitude: e.latlng.lat, longitude: e.latlng.lng };
+      if (drawModeRef.current === 'circle') {
+        // Zone rapide : cliquer sur la carte déplace le cercle
+        moveCircle(point, circleRadiusIdxRef.current);
+      } else {
+        setDraftPoints((prev) => [...prev, point]);
+      }
     };
     map.on('click', handler);
     return () => { map.off('click', handler); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawing]);
 
   // Prises d'une zone reçue
@@ -374,12 +428,54 @@ export default function MapScreen() {
   const startDrawing = () => {
     setOpenPanel(null);
     setDraftPoints([]);
+    manualPointsRef.current = [];
+    setDrawMode('points');
+    setCircleCenter(null);
     setDrawing(true);
+  };
+
+  /** Centre actuel de la vue Leaflet. */
+  const resolveMapCenter = (): ZonePoint => {
+    const c = leafletMapRef.current?.getCenter();
+    return c ? { latitude: c.lat, longitude: c.lng } : DEFAULT_MAP_CENTER;
+  };
+
+  // Zone rapide : cercle ajustable centré sur la vue actuelle de la carte
+  const startQuickZone = () => {
+    setOpenPanel(null);
+    manualPointsRef.current = [];
+    const center = resolveMapCenter();
+    setDrawMode('circle');
+    moveCircle(center, circleRadiusIdx);
+    setDrawing(true);
+  };
+
+  const moveCircle = (center: ZonePoint, radiusIdx: number) => {
+    setCircleCenter(center);
+    setCircleRadiusIdx(radiusIdx);
+    setDraftPoints(makeCirclePolygon(center, QUICK_ZONE_RADII[radiusIdx]));
+  };
+
+  // Bascule non destructive : le tracé manuel est sauvegardé puis restauré
+  const switchToCircleMode = () => {
+    if (drawMode === 'circle') return;
+    manualPointsRef.current = draftPoints;
+    const center = circleCenter ?? resolveMapCenter();
+    setDrawMode('circle');
+    moveCircle(center, circleRadiusIdx);
+  };
+
+  const switchToPointsMode = () => {
+    if (drawMode === 'points') return;
+    setDrawMode('points');
+    setDraftPoints(manualPointsRef.current);
   };
 
   const cancelDrawing = () => {
     setDrawing(false);
     setDraftPoints([]);
+    manualPointsRef.current = [];
+    setCircleCenter(null);
     setZoneName('');
     setShowNameModal(false);
   };
@@ -394,6 +490,7 @@ export default function MapScreen() {
       setShowNameModal(false);
       setDrawing(false);
       setDraftPoints([]);
+      setCircleCenter(null);
       setZoneName('');
       await refreshZones();
       setMapSource(zone.id);
@@ -606,16 +703,28 @@ export default function MapScreen() {
               </div>
             ))
           )}
-          <button
-            style={{
-              marginTop: 10, width: '100%', padding: '9px 0', borderRadius: 10, cursor: 'pointer',
-              fontSize: 13, fontWeight: 600, color: ACCENT,
-              background: 'rgba(0,230,181,0.10)', border: `1px solid ${ACCENT}`,
-            }}
-            onClick={startDrawing}
-          >
-            {t('zones.draw')}
-          </button>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button
+              style={{
+                flex: 1, padding: '9px 0', borderRadius: 10, cursor: 'pointer',
+                fontSize: 13, fontWeight: 600, color: ACCENT,
+                background: 'rgba(0,230,181,0.10)', border: `1px solid ${ACCENT}`,
+              }}
+              onClick={startQuickZone}
+            >
+              {t('zones.quickZone')}
+            </button>
+            <button
+              style={{
+                flex: 1, padding: '9px 0', borderRadius: 10, cursor: 'pointer',
+                fontSize: 13, fontWeight: 600, color: ACCENT,
+                background: 'rgba(0,230,181,0.10)', border: `1px solid ${ACCENT}`,
+              }}
+              onClick={startDrawing}
+            >
+              {t('zones.draw')}
+            </button>
+          </div>
 
           {receivedZones.length > 0 && (
             <>
@@ -798,14 +907,36 @@ export default function MapScreen() {
                 pathOptions={{ color: ACCENT, weight: 2, fillColor: ACCENT, fillOpacity: 0.15 }}
               />
             )}
-            {CircleMarker && drawing && draftPoints.map((p, idx) => (
-              <CircleMarker
+            {/* Mode points : sommets déplaçables par glisser */}
+            {Marker && drawing && drawMode === 'points' && draftPoints.map((p, idx) => (
+              <Marker
                 key={`draft-${idx}`}
-                center={[p.latitude, p.longitude]}
-                radius={6}
-                pathOptions={{ color: '#fff', weight: 2, fillColor: ACCENT, fillOpacity: 1 }}
+                position={[p.latitude, p.longitude]}
+                icon={getVertexIcon(ACCENT)}
+                draggable
+                eventHandlers={{
+                  dragend: (e: any) => {
+                    const ll = e.target.getLatLng();
+                    setDraftPoints((prev) => prev.map((pt, i) => (i === idx ? { latitude: ll.lat, longitude: ll.lng } : pt)));
+                  },
+                }}
               />
             ))}
+            {/* Mode cercle : centre déplaçable par glisser */}
+            {Marker && drawing && drawMode === 'circle' && circleCenter && (
+              <Marker
+                key="circle-center"
+                position={[circleCenter.latitude, circleCenter.longitude]}
+                icon={getCircleCenterIcon(ACCENT)}
+                draggable
+                eventHandlers={{
+                  dragend: (e: any) => {
+                    const ll = e.target.getLatLng();
+                    moveCircle({ latitude: ll.lat, longitude: ll.lng }, circleRadiusIdx);
+                  },
+                }}
+              />
+            )}
 
             {clusters.map((cluster) => {
               const isCluster = cluster.catches.length > 1;
@@ -933,9 +1064,57 @@ export default function MapScreen() {
           border: '1px solid rgba(255,255,255,0.12)', padding: 12,
           display: 'flex', flexDirection: 'column', gap: 10,
         }}>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>
-            {draftPoints.length < 3 ? t('zones.drawMin') : t('zones.drawHint', { n: draftPoints.length })}
+          {/* Bascule Points / Cercle */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {(['points', 'circle'] as const).map((mode) => {
+              const active = drawMode === mode;
+              return (
+                <button
+                  key={mode}
+                  onClick={() => (mode === 'circle' ? switchToCircleMode() : switchToPointsMode())}
+                  style={{
+                    flex: 1, padding: '8px 0', borderRadius: 10, cursor: 'pointer',
+                    fontSize: 13, fontWeight: 600,
+                    color: active ? ACCENT : 'rgba(255,255,255,0.6)',
+                    background: active ? 'rgba(0,230,181,0.12)' : 'none',
+                    border: `1px solid ${active ? ACCENT : 'rgba(255,255,255,0.18)'}`,
+                  }}
+                >
+                  {mode === 'points' ? t('zones.modePoints') : t('zones.modeCircle')}
+                </button>
+              );
+            })}
           </div>
+
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>
+            {drawMode === 'circle'
+              ? t('zones.quickZoneHint')
+              : draftPoints.length < 3 ? t('zones.drawMin') : t('zones.drawHint', { n: draftPoints.length })}
+          </div>
+
+          {/* Contrôle du rayon (mode cercle) */}
+          {drawMode === 'circle' && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+              <button
+                onClick={() => { if (circleRadiusIdx > 0 && circleCenter) moveCircle(circleCenter, circleRadiusIdx - 1); }}
+                disabled={circleRadiusIdx === 0}
+                style={{ width: 40, height: 36, borderRadius: 10, cursor: 'pointer', fontSize: 17, color: '#fff', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.18)', opacity: circleRadiusIdx === 0 ? 0.4 : 1 }}
+              >
+                −
+              </button>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#fff', minWidth: 110, textAlign: 'center' }}>
+                {t('zones.radius', { r: formatRadius(QUICK_ZONE_RADII[circleRadiusIdx]) })}
+              </span>
+              <button
+                onClick={() => { if (circleRadiusIdx < QUICK_ZONE_RADII.length - 1 && circleCenter) moveCircle(circleCenter, circleRadiusIdx + 1); }}
+                disabled={circleRadiusIdx === QUICK_ZONE_RADII.length - 1}
+                style={{ width: 40, height: 36, borderRadius: 10, cursor: 'pointer', fontSize: 17, color: '#fff', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.18)', opacity: circleRadiusIdx === QUICK_ZONE_RADII.length - 1 ? 0.4 : 1 }}
+              >
+                +
+              </button>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={cancelDrawing}
@@ -943,13 +1122,15 @@ export default function MapScreen() {
             >
               {t('common.cancel')}
             </button>
-            <button
-              onClick={() => setDraftPoints((prev) => prev.slice(0, -1))}
-              disabled={draftPoints.length === 0}
-              style={{ width: 48, borderRadius: 10, cursor: 'pointer', fontSize: 15, color: '#fff', background: 'none', border: '1px solid rgba(255,255,255,0.18)', opacity: draftPoints.length === 0 ? 0.4 : 1 }}
-            >
-              ↩
-            </button>
+            {drawMode === 'points' && (
+              <button
+                onClick={() => setDraftPoints((prev) => prev.slice(0, -1))}
+                disabled={draftPoints.length === 0}
+                style={{ width: 48, borderRadius: 10, cursor: 'pointer', fontSize: 15, color: '#fff', background: 'none', border: '1px solid rgba(255,255,255,0.18)', opacity: draftPoints.length === 0 ? 0.4 : 1 }}
+              >
+                ↩
+              </button>
+            )}
             <button
               onClick={() => setShowNameModal(true)}
               disabled={draftPoints.length < 3}

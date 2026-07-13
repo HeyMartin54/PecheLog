@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -17,7 +17,9 @@ import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { getSpeciesConfig } from '@/lib/species';
 import { supabase } from '@/lib/supabase';
 import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
-import { colors, radius, spacing, typography } from '@/lib/theme';
+import { colors, radius, shadow, spacing, typography } from '@/lib/theme';
+
+type IoniconName = ComponentProps<typeof Ionicons>['name'];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,6 +81,15 @@ function buildLast12Months(all: CatchRow[]): { month: string; count: number }[] 
   return months;
 }
 
+/** '#RRGGBB' → 'rgba(r, g, b, a)' — pour teinter pastilles et rampes de barres */
+function withAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function FilterChip({
@@ -123,10 +134,27 @@ const chipStyles = StyleSheet.create({
   },
 });
 
-function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+function SectionCard({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon?: IoniconName;
+  children: React.ReactNode;
+}) {
   return (
     <View style={cardStyles.card}>
-      <Text style={cardStyles.title}>{title}</Text>
+      <View style={cardStyles.titleRow}>
+        {icon ? (
+          <View style={cardStyles.titleIcon}>
+            <Ionicons name={icon} size={13} color={colors.accent} />
+          </View>
+        ) : null}
+        <Text style={cardStyles.title} numberOfLines={1}>
+          {title}
+        </Text>
+      </View>
       {children}
     </View>
   );
@@ -142,18 +170,65 @@ const cardStyles = StyleSheet.create({
     borderColor: colors.border,
     padding: spacing.lg,
     gap: spacing.md,
+    ...shadow.card,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  titleIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: radius.sm,
+    backgroundColor: colors.accentSubtle,
+    borderWidth: 1,
+    borderColor: colors.accentGlow,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     ...typography.h3,
     color: colors.textPrimary,
+    flexShrink: 1,
   },
 });
 
-function KpiCard({ value, label }: { value: string; label: string }) {
+/** État vide discret à l'intérieur d'une carte de graphique */
+function ChartEmpty({ label }: { label: string }) {
+  return (
+    <View style={emptyChartStyles.box}>
+      <Ionicons name="analytics-outline" size={18} color={colors.textSubtle} />
+      <Text style={emptyChartStyles.text}>{label}</Text>
+    </View>
+  );
+}
+
+const emptyChartStyles = StyleSheet.create({
+  box: {
+    height: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  text: {
+    ...typography.bodySmall,
+    color: colors.textSubtle,
+  },
+});
+
+function KpiCard({ icon, value, label }: { icon: IoniconName; value: string; label: string }) {
   return (
     <View style={kpiStyles.card}>
-      <Text style={kpiStyles.value}>{value}</Text>
-      <Text style={kpiStyles.label}>{label}</Text>
+      <View style={kpiStyles.iconChip}>
+        <Ionicons name={icon} size={13} color={colors.accent} />
+      </View>
+      <Text style={kpiStyles.value} numberOfLines={1} adjustsFontSizeToFit>
+        {value}
+      </Text>
+      <Text style={kpiStyles.label} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -168,19 +243,33 @@ const kpiStyles = StyleSheet.create({
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.xs,
     alignItems: 'center',
-    gap: 2,
+    gap: 3,
+    ...shadow.card,
+  },
+  iconChip: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: colors.accentSubtle,
+    borderWidth: 1,
+    borderColor: colors.accentGlow,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
   },
   value: {
-    fontSize: 20,
+    fontSize: 19,
     fontWeight: '700',
-    color: colors.accent,
+    color: colors.textPrimary,
     letterSpacing: -0.5,
+    fontVariant: ['tabular-nums'],
   },
   label: {
     ...typography.caption,
     color: colors.textMuted,
     textAlign: 'center',
     fontSize: 9,
+    letterSpacing: 0.5,
   },
 });
 
@@ -189,20 +278,37 @@ function HBar({
   value,
   max,
   color,
+  dot,
+  rank,
 }: {
   label: string;
   value: number;
   max: number;
   color: string;
+  dot?: boolean;
+  rank?: number;
 }) {
   const pct = max > 0 ? (value / max) * 100 : 0;
   return (
     <View style={hbarStyles.row}>
-      <Text style={hbarStyles.label} numberOfLines={1}>
-        {label}
-      </Text>
+      {rank != null ? <Text style={hbarStyles.rank}>{rank}</Text> : null}
+      <View style={hbarStyles.labelBox}>
+        {dot ? <View style={[hbarStyles.dot, { backgroundColor: color }]} /> : null}
+        <Text style={hbarStyles.label} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
       <View style={hbarStyles.track}>
-        <View style={[hbarStyles.fill, { width: `${pct}%` as `${number}%`, backgroundColor: color }]} />
+        <View
+          style={[
+            hbarStyles.fill,
+            {
+              width: `${pct}%` as `${number}%`,
+              backgroundColor: color,
+              minWidth: value > 0 ? 10 : 0,
+            },
+          ]}
+        />
       </View>
       <Text style={hbarStyles.value}>{value}</Text>
     </View>
@@ -211,91 +317,264 @@ function HBar({
 
 const hbarStyles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  label: { ...typography.bodySmall, color: colors.textMuted, width: 108 },
+  rank: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.textSubtle,
+    width: 12,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  labelBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    width: 108,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: radius.full,
+  },
+  label: { ...typography.bodySmall, color: colors.textMuted, fontSize: 12, flexShrink: 1 },
   track: {
     flex: 1,
-    height: 8,
+    height: 10,
     borderRadius: radius.full,
     backgroundColor: colors.surface2,
     overflow: 'hidden',
   },
   fill: { height: '100%', borderRadius: radius.full },
-  value: { ...typography.label, color: colors.textPrimary, width: 28, textAlign: 'right' },
+  value: {
+    ...typography.label,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    width: 28,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
 });
 
 function MonthlyChart({ data, locale }: { data: { month: string; count: number }[]; locale: string }) {
   const max = Math.max(...data.map((d) => d.count), 1);
+  const maxCount = Math.max(...data.map((d) => d.count));
+  const cols = data.map((item) => {
+    const mIdx = parseInt(item.month.split('-')[1], 10) - 1;
+    const monthLabel = new Date(2000, mIdx, 1)
+      .toLocaleDateString(locale, { month: 'short' })
+      .replace('.', '');
+    return { ...item, monthLabel, isRecord: item.count === maxCount && item.count > 0 };
+  });
   return (
-    <View style={mcStyles.container}>
-      {data.map((item) => {
-        const heightPct = Math.max((item.count / max) * 100, item.count > 0 ? 4 : 0);
-        const mIdx = parseInt(item.month.split('-')[1], 10) - 1;
-        const monthLabel = new Date(2000, mIdx, 1)
-          .toLocaleDateString(locale, { month: 'short' })
-          .replace('.', '');
-        return (
-          <View key={item.month} style={mcStyles.col}>
-            <Text style={mcStyles.count}>{item.count > 0 ? item.count : ''}</Text>
-            <View style={mcStyles.track}>
-              <View style={[mcStyles.bar, { height: `${heightPct}%` as `${number}%` }]} />
-            </View>
-            <Text style={mcStyles.monthLabel}>{monthLabel}</Text>
-          </View>
-        );
-      })}
+    <View style={mcStyles.wrapper}>
+      {/* Valeurs — le mois record est mis en évidence */}
+      <View style={mcStyles.labelRow}>
+        {cols.map((c) => (
+          <Text
+            key={c.month}
+            style={[mcStyles.count, c.isRecord && mcStyles.countRecord]}
+            numberOfLines={1}
+          >
+            {c.count > 0 ? c.count : ''}
+          </Text>
+        ))}
+      </View>
+      {/* Tracé — grilles discrètes + baseline */}
+      <View style={mcStyles.plot}>
+        {[25, 50, 75].map((pct) => (
+          <View key={pct} style={[mcStyles.gridline, { bottom: `${pct}%` as `${number}%` }]} />
+        ))}
+        <View style={mcStyles.barsRow}>
+          {cols.map((c) => {
+            const heightPct = Math.max((c.count / max) * 100, c.count > 0 ? 5 : 0);
+            return (
+              <View key={c.month} style={mcStyles.col}>
+                {c.count > 0 ? (
+                  <View
+                    style={[
+                      mcStyles.bar,
+                      { height: `${heightPct}%` as `${number}%` },
+                      c.isRecord && mcStyles.barRecord,
+                    ]}
+                  />
+                ) : (
+                  <View style={mcStyles.barEmpty} />
+                )}
+              </View>
+            );
+          })}
+        </View>
+        <View style={mcStyles.baseline} />
+      </View>
+      {/* Mois */}
+      <View style={mcStyles.labelRow}>
+        {cols.map((c) => (
+          <Text
+            key={c.month}
+            style={[mcStyles.monthLabel, c.isRecord && mcStyles.monthLabelRecord]}
+            numberOfLines={1}
+          >
+            {c.monthLabel}
+          </Text>
+        ))}
+      </View>
     </View>
   );
 }
 
 const mcStyles = StyleSheet.create({
-  container: { flexDirection: 'row', alignItems: 'flex-end', height: 110, gap: 3 },
+  wrapper: { gap: 4 },
+  labelRow: { flexDirection: 'row', gap: 3 },
+  count: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 9,
+    fontWeight: '600',
+    color: colors.textMuted,
+    fontVariant: ['tabular-nums'],
+  },
+  countRecord: { color: colors.accent, fontWeight: '700' },
+  plot: { height: 88, justifyContent: 'flex-end' },
+  gridline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: colors.border,
+  },
+  barsRow: { flexDirection: 'row', alignItems: 'flex-end', height: '100%', gap: 3 },
   col: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' },
-  track: { flex: 1, width: '100%', justifyContent: 'flex-end' },
-  bar: { width: '100%', backgroundColor: colors.accent, borderRadius: 3 },
-  count: { ...typography.caption, color: colors.accent, fontSize: 9, marginBottom: 1 },
-  monthLabel: { ...typography.caption, color: colors.textSubtle, fontSize: 9, marginTop: 3 },
+  bar: {
+    width: '64%',
+    backgroundColor: withAlpha(colors.accent, 0.55),
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+  },
+  barRecord: { backgroundColor: colors.accent },
+  barEmpty: {
+    width: '64%',
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: colors.surface2,
+  },
+  baseline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 1,
+    backgroundColor: colors.borderStrong,
+  },
+  monthLabel: {
+    ...typography.caption,
+    flex: 1,
+    textAlign: 'center',
+    color: colors.textSubtle,
+    fontSize: 9,
+    marginTop: 2,
+  },
+  monthLabelRecord: { color: colors.textMuted },
 });
 
 function TimeOfDayChart({ data }: { data: { label: string; icon: typeof TIME_SLOTS[0]['icon']; count: number }[] }) {
   const max = Math.max(...data.map((s) => s.count), 1);
   const topCount = Math.max(...data.map((s) => s.count));
   return (
-    <View style={todStyles.row}>
-      {data.map((slot) => {
-        const heightPct = Math.max((slot.count / max) * 100, slot.count > 0 ? 6 : 0);
-        const isTop = slot.count === topCount && slot.count > 0;
-        return (
-          <View key={slot.label} style={todStyles.col}>
-            <Text style={todStyles.count}>{slot.count > 0 ? slot.count : ''}</Text>
-            <View style={todStyles.track}>
-              <View
-                style={[
-                  todStyles.bar,
-                  {
-                    height: `${heightPct}%` as `${number}%`,
-                    backgroundColor: isTop ? colors.accent : colors.accentSubtle,
-                    borderWidth: isTop ? 0 : 1,
-                    borderColor: colors.accentGlow,
-                  },
-                ]}
-              />
+    <View style={todStyles.wrapper}>
+      {/* Valeurs */}
+      <View style={todStyles.row}>
+        {data.map((slot) => {
+          const isTop = slot.count === topCount && slot.count > 0;
+          return (
+            <Text key={slot.label} style={[todStyles.count, isTop && todStyles.countTop]} numberOfLines={1}>
+              {slot.count > 0 ? slot.count : ''}
+            </Text>
+          );
+        })}
+      </View>
+      {/* Tracé — rampe d'opacité (une seule teinte), meilleur créneau en accent plein */}
+      <View style={todStyles.plot}>
+        <View style={todStyles.barsRow}>
+          {data.map((slot) => {
+            const isTop = slot.count === topCount && slot.count > 0;
+            const heightPct = Math.max((slot.count / max) * 100, slot.count > 0 ? 6 : 0);
+            const rampAlpha = 0.25 + 0.5 * (slot.count / max);
+            return (
+              <View key={slot.label} style={todStyles.col}>
+                {slot.count > 0 ? (
+                  <View
+                    style={[
+                      todStyles.bar,
+                      {
+                        height: `${heightPct}%` as `${number}%`,
+                        backgroundColor: isTop ? colors.accent : withAlpha(colors.accent, rampAlpha),
+                      },
+                    ]}
+                  />
+                ) : (
+                  <View style={todStyles.barEmpty} />
+                )}
+              </View>
+            );
+          })}
+        </View>
+        <View style={todStyles.baseline} />
+      </View>
+      {/* Créneaux */}
+      <View style={todStyles.row}>
+        {data.map((slot) => {
+          const isTop = slot.count === topCount && slot.count > 0;
+          return (
+            <View key={slot.label} style={todStyles.footCol}>
+              <Ionicons name={slot.icon} size={14} color={isTop ? colors.accent : colors.textMuted} />
+              <Text style={[todStyles.slotLabel, isTop && todStyles.slotLabelTop]} numberOfLines={1}>
+                {slot.label}
+              </Text>
             </View>
-            <Ionicons name={slot.icon} size={13} color={colors.textMuted} />
-            <Text style={todStyles.slotLabel}>{slot.label}</Text>
-          </View>
-        );
-      })}
+          );
+        })}
+      </View>
     </View>
   );
 }
 
 const todStyles = StyleSheet.create({
-  row: { flexDirection: 'row', height: 100, gap: spacing.sm },
+  wrapper: { gap: 4 },
+  row: { flexDirection: 'row', gap: spacing.sm },
+  count: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.textMuted,
+    fontVariant: ['tabular-nums'],
+  },
+  countTop: { color: colors.accent, fontWeight: '700' },
+  plot: { height: 72, justifyContent: 'flex-end' },
+  barsRow: { flexDirection: 'row', alignItems: 'flex-end', height: '100%', gap: spacing.sm },
   col: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' },
-  track: { flex: 1, width: '80%', justifyContent: 'flex-end', marginBottom: spacing.xs },
-  bar: { width: '100%', borderRadius: 4 },
-  count: { ...typography.caption, color: colors.accent, fontSize: 10, marginBottom: 2 },
-  slotLabel: { ...typography.caption, color: colors.textSubtle, fontSize: 9, marginTop: 2 },
+  bar: {
+    width: '58%',
+    borderTopLeftRadius: 5,
+    borderTopRightRadius: 5,
+  },
+  barEmpty: {
+    width: '58%',
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: colors.surface2,
+  },
+  baseline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 1,
+    backgroundColor: colors.borderStrong,
+  },
+  footCol: { flex: 1, alignItems: 'center', gap: 2, paddingTop: 4 },
+  slotLabel: { ...typography.caption, color: colors.textSubtle, fontSize: 9 },
+  slotLabelTop: { color: colors.textMuted },
 });
 
 function RecordTile({
@@ -313,9 +592,18 @@ function RecordTile({
 }) {
   return (
     <View style={recStyles.tile}>
-      <Ionicons name={icon as any} size={18} color={iconColor} />
-      <Text style={recStyles.tileValue}>{value}</Text>
-      <Text style={recStyles.tileSub}>{sublabel}</Text>
+      <View
+        style={[
+          recStyles.iconChip,
+          { backgroundColor: withAlpha(iconColor, 0.14), borderColor: withAlpha(iconColor, 0.28) },
+        ]}
+      >
+        <Ionicons name={icon as any} size={16} color={iconColor} />
+      </View>
+      <Text style={recStyles.tileValue} numberOfLines={1} adjustsFontSizeToFit>
+        {value}
+      </Text>
+      <Text style={recStyles.tileSub} numberOfLines={1}>{sublabel}</Text>
       {species ? <Text style={recStyles.tileSpecies} numberOfLines={1}>{species}</Text> : null}
     </View>
   );
@@ -334,7 +622,22 @@ const recStyles = StyleSheet.create({
     alignItems: 'center',
     gap: 3,
   },
-  tileValue: { fontSize: 17, fontWeight: '700', color: colors.textPrimary, letterSpacing: -0.3 },
+  iconChip: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 3,
+  },
+  tileValue: {
+    fontSize: 19,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    letterSpacing: -0.3,
+    fontVariant: ['tabular-nums'],
+  },
   tileSub: { ...typography.caption, color: colors.textMuted, fontSize: 9 },
   tileSpecies: { ...typography.bodySmall, color: colors.textSubtle, fontSize: 11 },
 });
@@ -600,23 +903,28 @@ export default function StatsScreen() {
 
           {/* ── KPIs ─────────────────────────────────────────────────── */}
           <View style={styles.kpiRow}>
-            <KpiCard value={String(kpis.total)} label={t('home.statCatches')} />
-            <KpiCard value={String(kpis.lakes)} label={t('home.statLakes')} />
-            <KpiCard value={String(kpis.species)} label={t('stats.kpiSpecies')} />
+            <KpiCard icon="fish-outline" value={String(kpis.total)} label={t('home.statCatches')} />
+            <KpiCard icon="map-outline" value={String(kpis.lakes)} label={t('home.statLakes')} />
+            <KpiCard icon="shapes-outline" value={String(kpis.species)} label={t('stats.kpiSpecies')} />
             <KpiCard
+              icon="trophy-outline"
               value={kpis.maxWeight != null ? fmtWeight(kpis.maxWeight) : '—'}
               label={t('stats.kpiRecord')}
             />
           </View>
 
           {/* ── Prises par mois ──────────────────────────────────────── */}
-          <SectionCard title={t('stats.byMonth')}>
-            <MonthlyChart data={monthlyData} locale={locale} />
+          <SectionCard title={t('stats.byMonth')} icon="calendar-outline">
+            {monthlyData.some((m) => m.count > 0) ? (
+              <MonthlyChart data={monthlyData} locale={locale} />
+            ) : (
+              <ChartEmpty label={t('stats.noData')} />
+            )}
           </SectionCard>
 
           {/* ── Par espèce ───────────────────────────────────────────── */}
           {speciesData.length > 0 && (
-            <SectionCard title={t('stats.bySpecies')}>
+            <SectionCard title={t('stats.bySpecies')} icon="fish-outline">
               <View style={styles.barList}>
                 {speciesData.map((item) => (
                   <HBar
@@ -625,6 +933,7 @@ export default function StatsScreen() {
                     value={item.count}
                     max={speciesData[0].count}
                     color={getSpeciesConfig(item.species).color}
+                    dot
                   />
                 ))}
               </View>
@@ -633,15 +942,16 @@ export default function StatsScreen() {
 
           {/* ── Meilleurs leurres ────────────────────────────────────── */}
           {lureData.length > 0 && (
-            <SectionCard title={t('stats.bestLures')}>
+            <SectionCard title={t('stats.bestLures')} icon="ribbon-outline">
               <View style={styles.barList}>
-                {lureData.map((item) => (
+                {lureData.map((item, i) => (
                   <HBar
                     key={item.lure}
                     label={item.lure}
                     value={item.count}
                     max={lureData[0].count}
                     color={colors.warning}
+                    rank={i + 1}
                   />
                 ))}
               </View>
@@ -649,13 +959,17 @@ export default function StatsScreen() {
           )}
 
           {/* ── Heure de la journée ───────────────────────────────────── */}
-          <SectionCard title={t('stats.timeOfDay')}>
-            <TimeOfDayChart data={timeData} />
+          <SectionCard title={t('stats.timeOfDay')} icon="time-outline">
+            {timeData.some((s) => s.count > 0) ? (
+              <TimeOfDayChart data={timeData} />
+            ) : (
+              <ChartEmpty label={t('stats.noData')} />
+            )}
           </SectionCard>
 
           {/* ── Profondeur ───────────────────────────────────────────── */}
           {hasDepthData && (
-            <SectionCard title={t('stats.depth')}>
+            <SectionCard title={t('stats.depth')} icon="water-outline">
               <View style={styles.barList}>
                 {depthData.map((b) => (
                   <HBar
@@ -672,7 +986,7 @@ export default function StatsScreen() {
 
           {/* ── Records & trophées ───────────────────────────────────── */}
           {showRecords && (
-            <SectionCard title={t('stats.records')}>
+            <SectionCard title={t('stats.records')} icon="trophy-outline">
               <View style={recStyles.grid}>
                 {records.heaviest && records.heaviest.weight_lbs != null && (
                   <RecordTile
