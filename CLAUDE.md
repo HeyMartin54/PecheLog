@@ -201,6 +201,31 @@ et les **zones reçues** via le panneau « Zones » de la carte.
 
 ---
 
+## 📤 Partage d'une prise ✅ IMPLÉMENTÉ
+
+### Principe
+Depuis le détail d'une prise (`app/catch-detail.tsx`), le bouton **« 📤 Partager cette prise »**
+ouvre un modal avec un **aperçu de carte visuelle** (branding PêcheLog, photo, espèce, taille,
+lac, date, leurre, météo) et deux actions :
+- **Partager l'image** (mobile) — la carte est capturée en PNG via `react-native-view-shot`
+  puis envoyée à la feuille de partage native via `expo-sharing`
+- **Partager le texte** — message multi-lignes avec émojis via `Share` natif
+  (web : `navigator.share`, sinon copie presse-papiers — même pattern que le partage de zones)
+
+### Confidentialité
+Les **coordonnées GPS ne sont jamais incluses par défaut** — un interrupteur
+« Inclure les coordonnées GPS » (off par défaut) permet de les ajouter au texte
+et à la carte. Le spot reste secret sauf choix explicite.
+
+### Côté client
+- `lib/shareCatch.ts` — `buildCatchShareMessage` (texte localisé FR/EN, unités selon
+  préférences via `fmtWeight`/`fmtLength`/`fmtTemp`), `shareCatchText` (Share natif / web),
+  helpers `formatSizeLine` / `formatWeatherLine` / `formatCaughtAt`
+- `components/ShareCatchCard.tsx` — carte visuelle capturable (thème sombre, couleur d'espèce)
+- Fonctionne aussi **hors-ligne** (prise chargée du cache) — partage texte, photo si locale
+
+---
+
 ## 📡 Connexion sonar Bluetooth ❌ PAS ENCORE IMPLÉMENTÉ
 
 ### Objectif

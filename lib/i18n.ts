@@ -91,6 +91,21 @@ const fr: Dict = {
   'detail.takePhoto': 'Prendre une photo',
   'detail.fromLibrary': 'Choisir dans la bibliothèque',
 
+  // ── Partage de prise ──
+  'share.button': '📤 Partager cette prise',
+  'share.title': 'Partager la prise',
+  'share.includeCoords': 'Inclure les coordonnées GPS',
+  'share.coordsHint': 'Désactivé, votre spot reste secret.',
+  'share.image': "Partager l'image",
+  'share.text': 'Partager le texte',
+  'share.error': 'Impossible de partager cette prise.',
+  'share.copied': 'Message copié dans le presse-papiers.',
+  'share.msgTitle': '🎣 Belle prise : {species}',
+  'share.wind': 'vent',
+  'share.footer': '— Partagé depuis PêcheLog 🎣',
+  'share.appName': 'PêcheLog',
+  'share.cardTagline': 'Mon journal de pêche',
+
   // ── Temps relatif ──
   'time.justNow': "à l'instant",
   'time.minAgo': 'il y a {n} min',
@@ -485,6 +500,21 @@ const en: Dict = {
   'detail.chooseSource': 'Choose a source',
   'detail.takePhoto': 'Take a photo',
   'detail.fromLibrary': 'Choose from library',
+
+  // ── Catch sharing ──
+  'share.button': '📤 Share this catch',
+  'share.title': 'Share catch',
+  'share.includeCoords': 'Include GPS coordinates',
+  'share.coordsHint': 'Off — your spot stays secret.',
+  'share.image': 'Share image',
+  'share.text': 'Share text',
+  'share.error': 'Could not share this catch.',
+  'share.copied': 'Message copied to clipboard.',
+  'share.msgTitle': '🎣 Nice catch: {species}',
+  'share.wind': 'wind',
+  'share.footer': '— Shared from PêcheLog 🎣',
+  'share.appName': 'PêcheLog',
+  'share.cardTagline': 'My fishing journal',
 
   // ── Relative time ──
   'time.justNow': 'just now',
