@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -159,7 +159,7 @@ const SIZE_OPTIONS: SizeCategory[] = ['small', 'medium', 'large', 'trophy'];
 
 export default function CatchDetailScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
   const isWeb = Platform.OS === 'web';
   const { user } = useAuth();
   const { settings, t, locale, fmtTemp, fmtWeight, fmtLength } = useSettings();
@@ -173,6 +173,8 @@ export default function CatchDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
+  const editParamConsumed = useRef(false);
 
   // Editable fields
   const [species, setSpecies] = useState('');
@@ -215,6 +217,14 @@ export default function CatchDetailScreen() {
     if (!user?.id) return;
     loadLuresWithCache(user.id).then(setUserLures);
   }, [user?.id]);
+
+  // Arrivée depuis « Dupliquer » : ouvrir directement en mode édition (une seule fois)
+  useEffect(() => {
+    if (catch_ && edit === '1' && !fromCache && !editParamConsumed.current) {
+      editParamConsumed.current = true;
+      setEditing(true);
+    }
+  }, [catch_, edit, fromCache]);
 
   async function loadCatch() {
     setLoading(true);
@@ -496,6 +506,51 @@ export default function CatchDetailScreen() {
       setEditing(false);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDuplicate() {
+    if (!catch_ || !user?.id) return;
+    setDuplicating(true);
+    try {
+      // Copie tous les champs sauf l'id (et hors médias) → nouvelle prise éditable.
+      // caught_at est conservé pour que l'utilisateur ajuste légèrement l'heure.
+      const copy = {
+        user_id: user.id,
+        species: catch_.species,
+        lure: catch_.lure,
+        latitude: catch_.latitude,
+        longitude: catch_.longitude,
+        lake_name: catch_.lake_name,
+        depth_meters: catch_.depth_meters,
+        depth_source: catch_.depth_source,
+        temperature_c: catch_.temperature_c,
+        wind_speed_kmh: catch_.wind_speed_kmh,
+        wind_direction_deg: catch_.wind_direction_deg,
+        speed_kmh: catch_.speed_kmh,
+        weather_conditions: catch_.weather_conditions,
+        size_category: catch_.size_category,
+        weight_lbs: catch_.weight_lbs,
+        length_inches: catch_.length_inches,
+        notes: catch_.notes,
+        caught_at: catch_.caught_at,
+      };
+
+      const { data, error } = await supabase
+        .from('catches')
+        .insert(copy)
+        .select('id')
+        .single();
+
+      if (error || !data) {
+        Alert.alert(t('common.error'), t('detail.duplicateError'));
+        return;
+      }
+
+      // Ouvre la nouvelle prise par-dessus l'originale, directement en édition.
+      router.push(`/catch-detail?id=${data.id}&edit=1`);
+    } finally {
+      setDuplicating(false);
     }
   }
 
@@ -928,6 +983,21 @@ export default function CatchDetailScreen() {
         {editing && (
           <TouchableOpacity style={styles.cancelBtn} onPress={handleEditToggle}>
             <Text style={styles.cancelBtnText}>{t('common.cancel')}</Text>
+          </TouchableOpacity>
+        )}
+
+        {!editing && !confirmDelete && !fromCache && (
+          <TouchableOpacity
+            style={styles.duplicateBtn}
+            onPress={handleDuplicate}
+            disabled={duplicating}
+            activeOpacity={0.85}
+          >
+            {duplicating ? (
+              <ActivityIndicator color={ACCENT} size="small" />
+            ) : (
+              <Text style={styles.duplicateBtnText}>{t('detail.duplicate')}</Text>
+            )}
           </TouchableOpacity>
         )}
 
@@ -1365,6 +1435,20 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
     fontSize: 15,
     fontWeight: '500',
+  },
+  duplicateBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: ACCENT,
+    backgroundColor: colors.accentSubtle,
+  },
+  duplicateBtnText: {
+    color: ACCENT,
+    fontSize: 15,
+    fontWeight: '600',
   },
   deleteBtn: {
     alignItems: 'center',

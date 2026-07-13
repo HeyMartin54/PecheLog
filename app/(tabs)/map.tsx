@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   ActivityIndicator,
@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useMarkerIcons, CLUSTER_ANCHOR, type MarkerSpec } from '@/components/MarkerIconFactory';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
 import { supabase } from '@/lib/supabase';
@@ -150,6 +151,26 @@ function clusterCatches(catches: CatchPin[], latDelta: number, lngDelta: number)
   return clusters;
 }
 
+// ─── Marqueur auto-traqué ──────────────────────────────────────────────────────
+// Sur Android, react-native-maps capture la vue custom d'un marqueur dans un bitmap.
+// Avec tracksViewChanges=false dès le départ, la capture a lieu AVANT que la vue ait
+// sa taille finale → marqueur rogné (typiquement à droite/en bas) ou invisible.
+// Ici chaque marqueur traque ses changements le temps d'être peint à la bonne taille,
+// puis fige (tracksViewChanges=false) pour éviter la re-capture continue (fuite mémoire
+// / ANR / OOM au zoom). Le remount (changement de key au reclustering) relance la traque.
+function TrackedMarker({ children, ...props }: ComponentProps<typeof Marker>) {
+  const [tracks, setTracks] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setTracks(false), 800);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <Marker {...props} tracksViewChanges={tracks}>
+      {children}
+    </Marker>
+  );
+}
+
 // ─── Composant principal ──────────────────────────────────────────────────────
 
 export default function MapScreen() {
@@ -173,11 +194,6 @@ export default function MapScreen() {
   const [selectedCatch, setSelectedCatch] = useState<CatchPin | null>(null);
   const [mapDeltas, setMapDeltas] = useState({ lat: 8, lng: 8 });
   const [lakeQuery, setLakeQuery] = useState('');
-  // Android : les marqueurs à vue custom doivent être "suivis" le temps que leur
-  // bitmap se peigne, sinon le snapshot est capturé vide → pin invisible. On active
-  // brièvement le suivi quand l'ensemble des marqueurs change, puis on le coupe pour
-  // éviter la re-capture continue (fuite mémoire / ANR / OOM au zoom).
-  const [tracksChanges, setTracksChanges] = useState(true);
 
   // ─── Zones partagées ───────────────────────────────────────────────────────
   const [zones, setZones] = useState<SharedZone[]>([]);
@@ -494,13 +510,53 @@ export default function MapScreen() {
     [visibleCatches, mapDeltas],
   );
 
-  // Ré-arme le suivi des marqueurs quand l'ensemble affiché change, puis le coupe.
-  const clusterSig = useMemo(() => clusters.map((c) => c.id).join(','), [clusters]);
-  useEffect(() => {
-    setTracksChanges(true);
-    const t = setTimeout(() => setTracksChanges(false), 1000);
-    return () => clearTimeout(t);
-  }, [clusterSig]);
+  // ─── Icônes de marqueurs (PNG générés hors-écran) ──────────────────────────
+  // Calcule la signature d'un cluster/pin de façon cohérente avec MarkerIconFactory.
+  const clusterSpec = useCallback(
+    (cluster: Cluster): MarkerSpec => {
+      if (cluster.catches.length <= 1) {
+        const color = getColor(cluster.catches[0].species);
+        return { kind: 'pin', sig: `p:${color}`, color };
+      }
+      const sorted = Object.entries(cluster.speciesCounts).sort((a, b) => b[1] - a[1]);
+      const color1 = getColor(sorted[0][0]);
+      const multi = sorted.length > 1;
+      const color2 = multi ? getColor(sorted[1][0]) : color1;
+      const total = cluster.catches.length;
+      const n1 = sorted[0][1];
+      const n2 = total - n1;
+      const label = total > 99 ? '99+' : String(total);
+      return {
+        kind: 'cluster',
+        sig: `c:${color1}:${multi ? color2 : ''}:${label}:${n1}:${n2}`,
+        color1,
+        color2,
+        multi,
+        label,
+        big: total > 99,
+        n1,
+        n2,
+      };
+    },
+    [getColor],
+  );
+
+  const markerSpecs = useMemo<MarkerSpec[]>(() => {
+    const seen = new Set<string>();
+    const list: MarkerSpec[] = [];
+    for (const c of clusters) {
+      // Seuls les clusters utilisent une image ; les prises uniques restent en épingle custom.
+      if (c.catches.length <= 1) continue;
+      const spec = clusterSpec(c);
+      if (!seen.has(spec.sig)) {
+        seen.add(spec.sig);
+        list.push(spec);
+      }
+    }
+    return list;
+  }, [clusters, clusterSpec]);
+
+  const { icons: markerIcons, renderer: markerIconRenderer } = useMarkerIcons(markerSpecs);
 
   // ─── Panneau de filtre ─────────────────────────────────────────────────────
 
@@ -822,28 +878,25 @@ export default function MapScreen() {
           />
         )}
         {drawing && draftPoints.map((p, idx) => (
-          <Marker
+          <TrackedMarker
             key={`draft-${idx}`}
             coordinate={p}
             anchor={{ x: 0.5, y: 0.5 }}
-            tracksViewChanges={true}
           >
             <View style={styles.draftVertex} />
-          </Marker>
+          </TrackedMarker>
         ))}
         {clusters.map((cluster) => {
           const isCluster = cluster.catches.length > 1;
-          const singleCatch = cluster.catches[0];
 
+          // ── Prise unique : épingle custom d'origine (fiable, fonctionnait bien) ──
           if (!isCluster) {
+            const singleCatch = cluster.catches[0];
             return (
-              <Marker
+              <TrackedMarker
                 key={cluster.id}
                 coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
                 anchor={{ x: 0.5, y: 1 }}
-                // Android : true brièvement (le temps de peindre le bitmap) puis false
-                // au repos pour éviter la re-capture continue (fuite mémoire / ANR / OOM)
-                tracksViewChanges={tracksChanges}
                 onPress={(e) => { e.stopPropagation(); setSelectedCatch(singleCatch); setOpenPanel(null); }}
               >
                 <View style={styles.pinContainer}>
@@ -851,60 +904,62 @@ export default function MapScreen() {
                     <View style={styles.pinDot} />
                   </View>
                 </View>
-              </Marker>
+              </TrackedMarker>
             );
           }
 
-          const sorted = Object.entries(cluster.speciesCounts).sort((a, b) => b[1] - a[1]);
-          const total = cluster.catches.length;
-          const cnt1 = sorted[0][1];
-          const cnt2 = total - cnt1;
-          const color1 = getColor(sorted[0][0]);
-          const color2 = sorted.length > 1 ? getColor(sorted[1][0]) : color1;
-          const multiSpecies = sorted.length > 1;
-          const label = total > 99 ? '99+' : String(total);
+          // ── Cluster : marqueur image PNG (généré hors-écran) ──
+          const spec = clusterSpec(cluster);
+          const uri = markerIcons[spec.sig];
+          const clusterColor = spec.kind === 'cluster' ? spec.color1 : '#888';
+          const zoomToCluster = (e: { stopPropagation: () => void }) => {
+            e.stopPropagation();
+            setSelectedCatch(null);
+            setOpenPanel(null);
+            const lats = cluster.catches.map((o) => o.latitude);
+            const lngs = cluster.catches.map((o) => o.longitude);
+            mapRef.current?.animateToRegion({
+              latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
+              longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+              latitudeDelta: Math.max((Math.max(...lats) - Math.min(...lats)) * 2.5, 0.01),
+              longitudeDelta: Math.max((Math.max(...lngs) - Math.min(...lngs)) * 2.5, 0.01),
+            }, 400);
+          };
+
+          // Tant que l'image n'est pas prête (ou si la capture échoue durablement) :
+          // épingle custom colorée — fiable et JAMAIS rouge (contrairement au pinColor natif).
+          if (!uri) {
+            return (
+              <TrackedMarker
+                key={`${cluster.id}:ph`}
+                coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
+                anchor={{ x: 0.5, y: 1 }}
+                onPress={zoomToCluster}
+              >
+                <View style={styles.pinContainer}>
+                  <View style={[styles.pinShape, { backgroundColor: clusterColor }]}>
+                    <View style={styles.pinDot} />
+                  </View>
+                </View>
+              </TrackedMarker>
+            );
+          }
 
           return (
             <Marker
-              key={cluster.id}
+              key={`${cluster.id}:img`}
               coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
-              anchor={{ x: 0.5, y: 0.5 }}
-              tracksViewChanges={tracksChanges}
-              onPress={(e) => {
-                e.stopPropagation();
-                setSelectedCatch(null);
-                setOpenPanel(null);
-                const lats = cluster.catches.map((o) => o.latitude);
-                const lngs = cluster.catches.map((o) => o.longitude);
-                mapRef.current?.animateToRegion({
-                  latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
-                  longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
-                  latitudeDelta: Math.max((Math.max(...lats) - Math.min(...lats)) * 2.5, 0.01),
-                  longitudeDelta: Math.max((Math.max(...lngs) - Math.min(...lngs)) * 2.5, 0.01),
-                }, 400);
-              }}
-            >
-              <View style={styles.clusterWrap}>
-                <View style={styles.clusterInner}>
-                  {multiSpecies ? (
-                    <>
-                      <View style={[styles.clusterSegL, { flex: cnt1, backgroundColor: color1 }]} />
-                      <View style={[styles.clusterSegR, { flex: cnt2, backgroundColor: color2 }]} />
-                    </>
-                  ) : (
-                    <View style={[styles.clusterSegFull, { backgroundColor: color1 }]} />
-                  )}
-                </View>
-                <View style={styles.clusterNumWrap}>
-                  <Text style={[styles.clusterNum, total > 99 ? { fontSize: 11 } : null]}>
-                    {label}
-                  </Text>
-                </View>
-              </View>
-            </Marker>
+              anchor={CLUSTER_ANCHOR}
+              tracksViewChanges={false}
+              onPress={zoomToCluster}
+              image={{ uri }}
+            />
           );
         })}
       </MapView>
+
+      {/* Fabrique d'icônes : vues de capture cachées hors-écran (génèrent les PNG). */}
+      {markerIconRenderer}
 
       {/* Callout personnalisé (fonctionne sur Android + iOS).
           Zone reçue : pas de navigation vers le détail (prise d'un autre utilisateur). */}
@@ -1178,8 +1233,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
 
+  // ── Épingle d'une prise unique (vue custom, comme avant le fix clusters) ──
   pinContainer: {
-    width: 36, height: 36,
+    width: 44, height: 44,
     alignItems: 'center', justifyContent: 'center',
   },
   pinShape: {
@@ -1232,54 +1288,6 @@ const styles = StyleSheet.create({
   calloutRow: { fontSize: 13, color: '#3A5068', marginBottom: 3 },
   calloutDate: { marginTop: 4, fontSize: 11, color: '#6B8BA4' },
   calloutLink: { fontSize: 22, color: colors.accent, fontWeight: '700' },
-
-  // ── Clusters ──
-  clusterWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#fff',
-    padding: 3,
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-  },
-  clusterInner: {
-    width: 38,
-    height: 38,
-    flexDirection: 'row',
-  },
-  clusterSegFull: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-  },
-  clusterSegL: {
-    height: 38,
-    borderTopLeftRadius: 19,
-    borderBottomLeftRadius: 19,
-  },
-  clusterSegR: {
-    height: 38,
-    borderTopRightRadius: 19,
-    borderBottomRightRadius: 19,
-  },
-  clusterNumWrap: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clusterNum: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#fff',
-  },
 
   // ── Barre de filtres ──
   filterBar: {

@@ -62,16 +62,19 @@ const styles = StyleSheet.create({
 function SyncManager() {
   const { user } = useAuth();
   const isConnected = useNetworkStatus();
-  const prevConnected = useRef<boolean | null>(null);
+  const prevReady = useRef(false);
 
   useEffect(() => {
-    // Toute transition vers "en ligne" déclenche la sync :
-    //  - null → true  : démarrage de l'app avec connexion (file restée d'une session précédente)
-    //  - false → true : retour du signal
-    if (isConnected === true && prevConnected.current !== true && user?.id) {
-      trySyncOfflineCatches(user.id);
+    // La sync exige connexion ET session (l'insert Supabase est authentifié).
+    // On déclenche à chaque transition vers "prêt", ce qui couvre :
+    //  - démarrage de l'app avec connexion (file restée d'une session précédente)
+    //  - retour du signal
+    //  - session restaurée APRÈS le retour du signal (token expiré hors-ligne)
+    const ready = isConnected === true && !!user?.id;
+    if (ready && !prevReady.current) {
+      trySyncOfflineCatches(user!.id);
     }
-    prevConnected.current = isConnected;
+    prevReady.current = ready;
   }, [isConnected, user?.id]);
 
   return null;
