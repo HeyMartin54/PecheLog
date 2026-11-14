@@ -176,10 +176,20 @@ async function readUnlocked(): Promise<{ items: QueueItem[]; changed: boolean }>
 
   let changed = false;
   const items: QueueItem[] = [];
+  const unusable: unknown[] = [];
   for (const entry of parsed) {
     const { item, changed: c } = normalizeItem(entry);
     if (c) changed = true;
     if (item) items.push(item);
+    else unusable.push(entry);
+  }
+  // Entrées inexploitables (ni utilisateur ni espèce) : impossibles à envoyer,
+  // mais on en garde une trace plutôt que de les effacer sans rien dire.
+  if (unusable.length > 0) {
+    console.warn(`[Queue] ${unusable.length} entrée(s) inexploitable(s) mise(s) de côté`);
+    try {
+      await AsyncStorage.setItem(`${OFFLINE_QUEUE_KEY}_unusable_${Date.now()}`, JSON.stringify(unusable));
+    } catch { /* rien */ }
   }
   return { items, changed };
 }
