@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+
 type Coord = { latitude: number; longitude: number };
 
 type Props = {
@@ -12,7 +14,12 @@ type Props = {
 };
 
 export default function StaticMapView({ coordinate, height = 180, onPress }: Props) {
-  const [satellite, setSatellite] = useState(true);
+  // Voir LocationPickerMap : satellite en ligne, fond « carte » hors-ligne
+  // (bien plus souvent disponible sans réseau), sauf choix explicite.
+  const isOnline = useNetworkStatus();
+  const [userChoice, setUserChoice] = useState<boolean | null>(null);
+  const satellite = userChoice ?? isOnline !== false;
+  const setSatellite = (updater: (current: boolean) => boolean) => setUserChoice(updater(satellite));
 
   return (
     <View style={[styles.container, { height }]}>

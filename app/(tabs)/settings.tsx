@@ -1,8 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import {
     ActivityIndicator,
+    Alert,
+    Platform,
     ScrollView,
     StyleSheet,
     Text,
@@ -14,9 +16,33 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
-import { isOnline } from '@/lib/net';
-import { getOfflineQueueCount, trySyncOfflineCatches } from '@/lib/offlineSync';
+import {
+  getQueue,
+  getQueueSummary,
+  removeQueueItem,
+  subscribeQueue,
+  type QueueSummary,
+} from '@/lib/offlineSync';
+import { getSyncEngineState, subscribeSyncEngine, syncNow } from '@/lib/syncEngine';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+
+const EMPTY_SUMMARY: QueueSummary = {
+  total: 0, pendingCatches: 0, pendingMedia: 0, blocked: 0, otherUsers: 0, lastError: null,
+};
+
+/** Confirmation compatible web (Alert.alert n'y affiche rien). */
+function confirmAction(title: string, message: string, confirmLabel: string, cancelLabel: string): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    // eslint-disable-next-line no-alert
+    return Promise.resolve(typeof window !== 'undefined' ? window.confirm(`${title}\n\n${message}`) : true);
+  }
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: cancelLabel, style: 'cancel', onPress: () => resolve(false) },
+      { text: confirmLabel, style: 'destructive', onPress: () => resolve(true) },
+    ], { cancelable: true, onDismiss: () => resolve(false) });
+  });
+}
 
 // ─── Sélecteur segmenté générique ─────────────────────────────────────────────
 
@@ -52,47 +78,73 @@ function Segmented<T extends string>({
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, signOut } = useAuth();
-  const { settings, updateSettings, t } = useSettings();
+  const { user, cachedUserId, cachedEmail, sessionStatus, signOut } = useAuth();
+  const knownUserId = user?.id ?? cachedUserId;
+  const { settings, updateSettings, t, locale } = useSettings();
   const insets = useSafeAreaInsets();
   const [loggingOut, setLoggingOut] = useState(false);
 
-  // ── File d'attente hors-ligne ──
-  const [queueCount, setQueueCount] = useState(0);
-  const [syncing, setSyncing] = useState(false);
+  // ── File d'attente : état RÉEL, mis à jour en direct ──
+  const [summary, setSummary] = useState<QueueSummary>(EMPTY_SUMMARY);
+  const engine = useSyncExternalStore(subscribeSyncEngine, getSyncEngineState, getSyncEngineState);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  const refreshQueueCount = useCallback(async () => {
-    setQueueCount(await getOfflineQueueCount());
-  }, []);
+  const refreshSummary = useCallback(async () => {
+    setSummary(await getQueueSummary(knownUserId));
+  }, [knownUserId]);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshQueueCount();
-    }, [refreshQueueCount]),
-  );
+  useFocusEffect(useCallback(() => { refreshSummary(); }, [refreshSummary]));
+  useEffect(() => subscribeQueue(() => { refreshSummary(); }), [refreshSummary]);
+
+  const syncing = engine.running;
 
   const handleSyncNow = async () => {
-    if (syncing || !user?.id) return;
-    setSyncing(true);
+    if (syncing) return;
     setSyncMessage(null);
-    try {
-      if (!(await isOnline())) {
-        setSyncMessage(t('settings.syncOffline'));
-        return;
+    // Le message décrit ce qui s'est RÉELLEMENT passé (avant : « terminée »
+    // s'affichait même quand rien n'avait pu être envoyé).
+    const result = await syncNow();
+    await refreshSummary();
+    if (result.status === 'offline') setSyncMessage(t('settings.syncOffline'));
+    else if (result.status === 'no-session') setSyncMessage(t('settings.syncNoSession'));
+    else if (result.remaining - result.blocked > 0) setSyncMessage(t('settings.syncPartial', { n: result.remaining }));
+    else if (result.blocked > 0) setSyncMessage(t('settings.syncBlocked', { n: result.blocked }));
+    else if (result.synced + result.mediaUploaded > 0) setSyncMessage(t('settings.syncSent', { n: result.synced }));
+    else setSyncMessage(t('settings.syncDone'));
+  };
+
+  const handleDiscardBlocked = async () => {
+    const ok = await confirmAction(
+      t('settings.discardTitle'),
+      t('settings.discardBody', { n: summary.blocked }),
+      t('common.delete'),
+      t('common.cancel'),
+    );
+    if (!ok) return;
+    const queue = await getQueue();
+    for (const item of queue) {
+      if (item.blocked && item.payload.user_id === knownUserId) {
+        await removeQueueItem(item.id, { deleteMedia: true });
       }
-      await trySyncOfflineCatches(user.id);
-      await refreshQueueCount();
-      setSyncMessage(t('settings.syncDone'));
-    } finally {
-      setSyncing(false);
     }
+    await refreshSummary();
   };
 
   const handleLogout = async () => {
     if (loggingOut) return;
-    setLoggingOut(true);
 
+    // Des prises ne sont pas encore sur le serveur : prévenir avant de sortir.
+    if (summary.total > 0) {
+      const ok = await confirmAction(
+        t('settings.logoutPendingTitle'),
+        t('settings.logoutPendingBody', { n: summary.total }),
+        t('settings.logout'),
+        t('common.cancel'),
+      );
+      if (!ok) return;
+    }
+
+    setLoggingOut(true);
     const error = await signOut();
     if (error) {
       console.warn('[Settings] Erreur déconnexion (session locale effacée quand même)', error);
@@ -101,6 +153,15 @@ export default function SettingsScreen() {
     // Toujours naviguer vers login, même si l'invalidation réseau a échoué
     router.replace('/login');
   };
+
+  const sessionLabel =
+    sessionStatus === 'active' ? t('settings.connected')
+    : sessionStatus === 'expired' ? t('settings.sessionExpired')
+    : t('settings.sessionOffline');
+
+  const lastSyncLabel = engine.lastRunAt
+    ? new Date(engine.lastRunAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+    : null;
 
   return (
     <ScrollView
@@ -118,10 +179,23 @@ export default function SettingsScreen() {
             </View>
             <View style={styles.profileInfo}>
               <Text style={styles.profileEmail} numberOfLines={1}>
-                {user?.email || t('settings.user')}
+                {user?.email || cachedEmail || t('settings.user')}
               </Text>
-              <Text style={styles.profileSubtext}>{t('settings.connected')}</Text>
+              <Text
+                style={[styles.profileSubtext, sessionStatus !== 'active' && { color: colors.warning }]}
+              >
+                {sessionLabel}
+              </Text>
             </View>
+            {sessionStatus === 'expired' && (
+              <TouchableOpacity
+                style={styles.reconnectBtn}
+                onPress={() => router.push('/login')}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.reconnectBtnText}>{t('sync.reconnect')}</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </View>
@@ -201,18 +275,36 @@ export default function SettingsScreen() {
               <Ionicons name="cloud-upload" size={20} color={colors.accent} />
               <Text style={styles.settingLabel}>{t('settings.pendingCatches')}</Text>
             </View>
-            <View style={[styles.queueBadge, queueCount > 0 && styles.queueBadgeActive]}>
-              <Text style={[styles.queueBadgeText, queueCount > 0 && styles.queueBadgeTextActive]}>
-                {queueCount}
+            <View style={[styles.queueBadge, summary.pendingCatches > 0 && styles.queueBadgeActive]}>
+              <Text
+                style={[styles.queueBadgeText, summary.pendingCatches > 0 && styles.queueBadgeTextActive]}
+                testID="pending-count"
+              >
+                {summary.pendingCatches}
               </Text>
             </View>
           </View>
 
+          {summary.pendingMedia > 0 && (
+            <View style={styles.settingRow}>
+              <View style={styles.settingLeft}>
+                <Ionicons name="images" size={20} color={colors.accent} />
+                <Text style={styles.settingLabel}>{t('settings.pendingMedia')}</Text>
+              </View>
+              <View style={[styles.queueBadge, styles.queueBadgeActive]}>
+                <Text style={[styles.queueBadgeText, styles.queueBadgeTextActive]}>
+                  {summary.pendingMedia}
+                </Text>
+              </View>
+            </View>
+          )}
+
           <TouchableOpacity
-            style={[styles.settingRow, { borderBottomWidth: 0 }, (syncing || queueCount === 0) && styles.settingRowDisabled]}
+            style={[styles.settingRow, { borderBottomWidth: 0 }, syncing && styles.settingRowDisabled]}
             onPress={handleSyncNow}
-            disabled={syncing || queueCount === 0}
+            disabled={syncing}
             activeOpacity={0.8}
+            testID="sync-now"
           >
             <View style={styles.settingLeft}>
               {syncing ? (
@@ -227,7 +319,24 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </View>
+
         {syncMessage ? <Text style={styles.syncMessage}>{syncMessage}</Text> : null}
+        {!syncMessage && lastSyncLabel ? (
+          <Text style={styles.syncMessage}>{t('settings.lastSync', { time: lastSyncLabel })}</Text>
+        ) : null}
+
+        {/* Éléments refusés par le serveur : visibles, jamais supprimés en silence */}
+        {summary.blocked > 0 && (
+          <View style={styles.blockedCard}>
+            <Text style={styles.blockedTitle}>{t('settings.blockedTitle', { n: summary.blocked })}</Text>
+            {summary.lastError ? (
+              <Text style={styles.blockedError} numberOfLines={3}>{summary.lastError}</Text>
+            ) : null}
+            <TouchableOpacity onPress={handleDiscardBlocked} activeOpacity={0.8}>
+              <Text style={styles.blockedAction}>{t('settings.discardBlocked')}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       {/* Équipement */}
@@ -423,6 +532,42 @@ const styles = StyleSheet.create({
   },
   queueBadgeTextActive: {
     color: colors.accent,
+  },
+  reconnectBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  reconnectBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.warning,
+  },
+  blockedCard: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.errorSubtle,
+    borderWidth: 1,
+    borderColor: 'rgba(255,94,94,0.25)',
+    gap: 6,
+  },
+  blockedTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.error,
+  },
+  blockedError: {
+    fontSize: 12,
+    color: colors.textMuted,
+  },
+  blockedAction: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.error,
+    marginTop: 2,
   },
   syncMessage: {
     ...typography.caption,

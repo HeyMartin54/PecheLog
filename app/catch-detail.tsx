@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,10 +25,13 @@ import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
 import ShareCatchCard from '@/components/ShareCatchCard';
 import { buildCatchShareMessage, shareCatchText } from '@/lib/shareCatch';
-import { fetchWithTimeout } from '@/lib/net';
+import { fetchWithTimeout, withTimeout } from '@/lib/net';
 import { supabase } from '@/lib/supabase';
 import { uploadMediaFile } from '@/lib/uploadMedia';
-import { loadCatchesCache } from '@/lib/catchCache';
+import { CATCH_SELECT_ALL, type CachedCatch } from '@/lib/catchCache';
+import { applyServerCatch, removeLocalCatch } from '@/lib/catchStore';
+import { getQueueItem, removeQueueItem, resolveMediaUri } from '@/lib/offlineQueue';
+import { useCatches } from '@/lib/hooks/useCatches';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -164,20 +167,40 @@ export default function CatchDetailScreen() {
   const router = useRouter();
   const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
   const isWeb = Platform.OS === 'web';
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
+  const knownUserId = user?.id ?? cachedUserId;
   const { settings, t, locale, fmtTemp, fmtWeight, fmtLength } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
+  // ─── Source des données ────────────────────────────────────────────────────
+  // La prise est lue dans le magasin local (cache du serveur + file d'attente) :
+  // elle s'affiche tout de suite, avec ou sans réseau, y compris si elle n'a
+  // pas encore été synchronisée. Le serveur n'est consulté qu'en arrière-plan,
+  // pour rafraîchir la ligne et récupérer ses médias.
+  const { catches, loading: storeLoading } = useCatches();
+  const stored = useMemo(
+    () => (id ? catches.find((c) => c.id === id) ?? null : null),
+    [catches, id],
+  );
+  const isPending = stored?.pending === true;
+
   const [catch_, setCatch] = useState<CatchDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [fromCache, setFromCache] = useState(false);
+  // Le serveur a-t-il été consulté (avec ou sans succès) pour cette prise ?
+  const [remoteTried, setRemoteTried] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const editParamConsumed = useRef(false);
+  const editingRef = useRef(false);
+  editingRef.current = editing;
+  const leavingRef = useRef(false);
+
+  // Modifier / supprimer / dupliquer exigent une session et le réseau. Une prise
+  // en attente n'existe pas encore côté serveur : lecture seule (ou retrait).
+  const readOnly = isPending || !user?.id || isConnected === false;
 
   // Partage
   const [showShareModal, setShowShareModal] = useState(false);
@@ -196,6 +219,8 @@ export default function CatchDetailScreen() {
   const [lengthInches, setLengthInches] = useState('');
   const [mediaItems, setMediaItems] = useState<CatchMedia[]>([]);
   const [newMedia, setNewMedia] = useState<{ uri: string; type: 'photo' | 'video' }[]>([]);
+  // Médias locaux d'une prise en attente (pas encore envoyés)
+  const [pendingMedia, setPendingMedia] = useState<{ uri: string; type: 'photo' | 'video' }[]>([]);
   const [notes, setNotes] = useState('');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
@@ -217,90 +242,111 @@ export default function CatchDetailScreen() {
   const [webDate, setWebDate] = useState(() => dtFmtDate(new Date()));
   const [webTime, setWebTime] = useState(() => dtFmtTime(new Date()));
 
+  // 1) Affichage immédiat depuis le magasin local. Une mise à jour arrivée
+  //    pendant une édition n'écrase pas ce que l'utilisateur est en train de saisir.
+  useEffect(() => {
+    if (!stored || editingRef.current) return;
+    const detail = stored as unknown as CatchDetail;
+    setCatch(detail);
+    populateForm(detail);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stored]);
+
+  // 2) Rafraîchissement depuis le serveur + médias, en arrière-plan et borné.
+  //    Le résultat passe par le magasin (→ effet 1) : une seule source de vérité.
   useEffect(() => {
     if (!id) return;
-    loadCatch();
-  }, [id, isConnected]);
+    if (!user?.id || isPending || isConnected === false) {
+      setRemoteTried(true);
+      return;
+    }
+    let cancelled = false;
+    setRemoteTried(false);
+    (async () => {
+      try {
+        const [catchRes, mediaRes] = await withTimeout(
+          Promise.all([
+            supabase.from('catches').select(CATCH_SELECT_ALL).eq('id', id).maybeSingle(),
+            supabase
+              .from('catch_media')
+              .select('id, media_type, storage_path, thumbnail_path, local_uri, uploaded')
+              .eq('catch_id', id)
+              .order('created_at'),
+          ]),
+          15000,
+          'détail de la prise',
+        );
+        if (cancelled) return;
+        if (!catchRes.error) {
+          if (catchRes.data) {
+            if (!editingRef.current) applyServerCatch(catchRes.data as unknown as CachedCatch);
+          } else {
+            // Le serveur confirme que la prise n'existe plus (supprimée ailleurs)
+            removeLocalCatch(id);
+          }
+        }
+        if (!mediaRes.error && mediaRes.data) setMediaItems(mediaRes.data as CatchMedia[]);
+      } catch (e) {
+        console.warn('[CatchDetail] Rafraîchissement impossible (données locales affichées)', e);
+      } finally {
+        if (!cancelled) setRemoteTried(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, user?.id, isPending, isConnected]);
+
+  // 3) Médias locaux d'une prise en attente
+  useEffect(() => {
+    if (!id || !isPending) { setPendingMedia([]); return; }
+    let cancelled = false;
+    getQueueItem(id).then((item) => {
+      if (cancelled || !item) return;
+      const local: { uri: string; type: 'photo' | 'video' }[] = [];
+      for (const m of item.media) {
+        const uri = resolveMediaUri(m.uri);
+        if (uri) local.push({ uri, type: m.type });
+      }
+      setPendingMedia(local);
+    });
+    return () => { cancelled = true; };
+  }, [id, isPending]);
+
+  // 4) Introuvable partout (ni localement, ni sur le serveur) → retour
+  useEffect(() => {
+    if (!id || stored || catch_ || storeLoading || !remoteTried || leavingRef.current) return;
+    leavingRef.current = true;
+    if (isConnected === false || !user?.id) {
+      Alert.alert(t('detail.offlineTitle'), t('detail.offlineBody'));
+    } else {
+      Alert.alert(t('common.error'), t('detail.loadError'));
+    }
+    router.back();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, stored, catch_, storeLoading, remoteTried]);
+
+  // La prise a disparu du magasin alors qu'elle était affichée (supprimée sur
+  // un autre appareil) → on quitte l'écran.
+  useEffect(() => {
+    if (!catch_ || stored || storeLoading || !remoteTried || leavingRef.current || deleting) return;
+    leavingRef.current = true;
+    router.back();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stored, catch_, storeLoading, remoteTried]);
 
   useEffect(() => {
-    if (!user?.id) return;
-    loadLuresWithCache(user.id).then(setUserLures);
-  }, [user?.id]);
+    if (!knownUserId) return;
+    loadLuresWithCache(knownUserId).then(setUserLures);
+  }, [knownUserId]);
 
   // Arrivée depuis « Dupliquer » : ouvrir directement en mode édition (une seule fois)
   useEffect(() => {
-    if (catch_ && edit === '1' && !fromCache && !editParamConsumed.current) {
+    if (catch_ && edit === '1' && !readOnly && !editParamConsumed.current) {
       editParamConsumed.current = true;
       setEditing(true);
     }
-  }, [catch_, edit, fromCache]);
+  }, [catch_, edit, readOnly]);
 
-  async function loadCatch() {
-    setLoading(true);
-
-    // Hors-ligne : chercher dans le cache local
-    if (isConnected === false) {
-      if (user?.id) {
-        const cached = await loadCatchesCache(user.id);
-        const found = cached?.find((c) => c.id === id);
-        if (found) {
-          const detail = found as unknown as CatchDetail;
-          setCatch(detail);
-          populateForm(detail);
-          setFromCache(true);
-          setLoading(false);
-          return;
-        }
-      }
-      Alert.alert(t('detail.offlineTitle'), t('detail.offlineBody'));
-      router.back();
-      return;
-    }
-
-    setFromCache(false);
-    try {
-      const [catchRes, mediaRes] = await Promise.all([
-        supabase
-          .from('catches')
-          .select(
-            'id, species, lure, latitude, longitude, lake_name, depth_meters, depth_source, ' +
-            'temperature_c, wind_speed_kmh, wind_direction_deg, speed_kmh, weather_conditions, ' +
-            'size_category, weight_lbs, length_inches, notes, caught_at',
-          )
-          .eq('id', id)
-          .single(),
-        supabase
-          .from('catch_media')
-          .select('id, media_type, storage_path, thumbnail_path, local_uri, uploaded')
-          .eq('catch_id', id)
-          .order('created_at'),
-      ]);
-
-      if (catchRes.error || !catchRes.data) {
-        // Tentative de fallback sur le cache
-        if (user?.id) {
-          const cached = await loadCatchesCache(user.id);
-          const found = cached?.find((c) => c.id === id);
-          if (found) {
-            const detail = found as unknown as CatchDetail;
-            setCatch(detail);
-            populateForm(detail);
-            setFromCache(true);
-            return;
-          }
-        }
-        Alert.alert(t('common.error'), t('detail.loadError'));
-        router.back();
-        return;
-      }
-
-      setCatch(catchRes.data as unknown as CatchDetail);
-      populateForm(catchRes.data as unknown as CatchDetail);
-      setMediaItems((mediaRes.data ?? []) as CatchMedia[]);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const loading = !catch_;
 
   function populateForm(data: CatchDetail) {
     setSpecies(data.species ?? '');
@@ -495,7 +541,10 @@ export default function CatchDetailScreen() {
         return;
       }
 
-      setCatch({ ...catch_, ...updates });
+      const updated = { ...catch_, ...updates };
+      setCatch(updated);
+      // Répercuter tout de suite sur l'accueil, la carte et les stats
+      applyServerCatch({ ...(stored ?? {}), ...updated } as unknown as CachedCatch);
 
       // Upload des nouveaux médias ajoutés en mode édition
       for (const item of newMedia) {
@@ -548,7 +597,7 @@ export default function CatchDetailScreen() {
       const { data, error } = await supabase
         .from('catches')
         .insert(copy)
-        .select('id')
+        .select(CATCH_SELECT_ALL)
         .single();
 
       if (error || !data) {
@@ -556,8 +605,12 @@ export default function CatchDetailScreen() {
         return;
       }
 
+      // La copie est connue localement avant même d'ouvrir son écran
+      const created = data as unknown as CachedCatch;
+      applyServerCatch(created);
+
       // Ouvre la nouvelle prise par-dessus l'originale, directement en édition.
-      router.push(`/catch-detail?id=${data.id}&edit=1`);
+      router.push(`/catch-detail?id=${created.id}&edit=1`);
     } finally {
       setDuplicating(false);
     }
@@ -614,11 +667,21 @@ export default function CatchDetailScreen() {
   async function handleDelete() {
     setDeleting(true);
     try {
+      // Prise jamais synchronisée : elle n'existe que dans la file locale
+      if (isPending) {
+        leavingRef.current = true;
+        await removeQueueItem(catch_!.id, { deleteMedia: true });
+        router.back();
+        return;
+      }
+
       const { error } = await supabase.from('catches').delete().eq('id', catch_!.id);
       if (error) {
         setConfirmDelete(false);
         Alert.alert(t('common.error'), t('detail.deleteError'));
       } else {
+        leavingRef.current = true;
+        removeLocalCatch(catch_!.id);
         router.back();
       }
     } finally {
@@ -658,10 +721,16 @@ export default function CatchDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backBtnText}>{t('detail.back')}</Text>
         </TouchableOpacity>
-        {fromCache ? (
+        {readOnly ? (
           <View style={styles.offlineBadge}>
-            <Ionicons name="cloud-offline-outline" size={12} color={colors.warning} />
-            <Text style={styles.offlineBadgeText}>{t('detail.readOnly')}</Text>
+            <Ionicons
+              name={isPending ? 'time-outline' : 'cloud-offline-outline'}
+              size={12}
+              color={colors.warning}
+            />
+            <Text style={styles.offlineBadgeText}>
+              {isPending ? t('sync.pendingBadge') : t('detail.readOnly')}
+            </Text>
           </View>
         ) : (
           <TouchableOpacity
@@ -893,8 +962,18 @@ export default function CatchDetailScreen() {
           )}
 
           {/* Thumbnails des médias */}
-          {(mediaItems.length > 0 || newMedia.length > 0 || editing) && (
+          {(mediaItems.length > 0 || newMedia.length > 0 || pendingMedia.length > 0 || editing) && (
             <View style={styles.mediaThumbnailRow}>
+              {pendingMedia.map((item, idx) => (
+                <View key={`pending-${idx}`} style={styles.mediaThumbnail}>
+                  <Image source={{ uri: item.uri }} style={styles.mediaThumbnailImg} />
+                  {item.type === 'video' && (
+                    <View style={styles.videoOverlay}>
+                      <Text style={styles.videoIcon}>▶</Text>
+                    </View>
+                  )}
+                </View>
+              ))}
               {mediaItems.map((item) => {
                 const uri = item.uploaded
                   ? supabase.storage.from('catch-media').getPublicUrl(item.thumbnail_path ?? item.storage_path).data.publicUrl
@@ -968,10 +1047,13 @@ export default function CatchDetailScreen() {
               setShowLureForm(false);
               const created = await createUserLure(user.id, data);
               if (created) {
-                const updated = [...userLures, created].sort((a, b) => a.name.localeCompare(b.name));
+                const updated = [...userLures.filter((l) => l.id !== created.id), created]
+                  .sort((a, b) => a.name.localeCompare(b.name));
                 setUserLures(updated);
                 await setCachedLures(user.id, updated);
                 setLure(created.name);
+              } else {
+                Alert.alert(t('common.error'), t('lures.createError'));
               }
             }}
             onClose={() => setShowLureForm(false)}
@@ -1053,7 +1135,7 @@ export default function CatchDetailScreen() {
           </TouchableOpacity>
         )}
 
-        {!editing && !confirmDelete && !fromCache && (
+        {!editing && !confirmDelete && !readOnly && (
           <TouchableOpacity
             style={styles.duplicateBtn}
             onPress={handleDuplicate}
@@ -1068,7 +1150,8 @@ export default function CatchDetailScreen() {
           </TouchableOpacity>
         )}
 
-        {!editing && !confirmDelete && !fromCache && (
+        {/* Une prise en attente peut être retirée de la file (saisie par erreur) */}
+        {!editing && !confirmDelete && (!readOnly || isPending) && (
           <TouchableOpacity style={styles.deleteBtn} onPress={() => setConfirmDelete(true)}>
             <Text style={styles.deleteBtnText}>{t('detail.delete')}</Text>
           </TouchableOpacity>

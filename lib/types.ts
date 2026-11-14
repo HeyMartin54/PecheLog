@@ -11,6 +11,8 @@ export type MediaType = 'photo' | 'video';
 
 /** Média local (avant upload) — photo ou vidéo prise / choisie par l'utilisateur. */
 export type MediaItem = {
+  /** UUID client : sert de clé pour catch_media et de nom de fichier dans le Storage. */
+  id?: string;
   uri: string;
   type: MediaType;
 };
@@ -27,10 +29,14 @@ export type CatchMedia = {
 
 /**
  * Payload d'insertion dans la table catches.
- * `local_id` sert au suivi hors-ligne et est retiré avant l'insert.
+ * `id` est un UUID généré SUR L'APPAREIL (lib/uuid.ts) : rejouer un envoi ne
+ * peut donc pas créer de doublon (la clé primaire le refuse).
+ * `local_id` est un vestige du suivi hors-ligne, retiré avant l'insert.
  * Stockage canonique : °C, lb, pouces, mètres, km/h.
  */
 export type CatchPayload = {
+  /** Optionnel uniquement pour les entrées de file écrites par d'anciennes versions. */
+  id?: string;
   user_id: string;
   map_id: string | null;
   trip_id: string | null;

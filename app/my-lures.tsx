@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import {
   createUserLure,
   deleteUserLure,
-  loadLuresWithCache,
+  watchLures,
   setCachedLures,
   updateUserLure,
   type UserLure,
@@ -31,7 +31,8 @@ import { uploadLureMedia } from '@/lib/uploadLureMedia';
 export default function MyLuresScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
+  const knownUserId = user?.id ?? cachedUserId;
   const { t } = useSettings();
 
   const [lures, setLures] = useState<UserLure[]>([]);
@@ -39,17 +40,15 @@ export default function MyLuresScreen() {
   const [formVisible, setFormVisible] = useState(false);
   const [editingLure, setEditingLure] = useState<UserLure | undefined>(undefined);
 
-  const load = useCallback(async () => {
-    if (!user?.id) return;
-    setLoading(true);
-    const result = await loadLuresWithCache(user.id);
-    setLures(result);
-    setLoading(false);
-  }, [user?.id]);
-
+  // Liste locale immédiate (disponible hors-ligne), puis mise à jour si le
+  // serveur répond : l'écran n'attend plus le réseau pour s'afficher.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!knownUserId) { setLoading(false); return; }
+    return watchLures(knownUserId, (result) => {
+      setLures(result);
+      setLoading(false);
+    });
+  }, [knownUserId]);
 
   const openCreate = () => {
     setEditingLure(undefined);

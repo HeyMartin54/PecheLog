@@ -1,14 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+// Feuille de style Leaflet embarquée dans le bundle (plus de chargement depuis
+// un CDN : la carte s'affiche même si unpkg.com est injoignable).
+import 'leaflet/dist/leaflet.css';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
-import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { useCatches } from '@/lib/hooks/useCatches';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
-import { supabase } from '@/lib/supabase';
-import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import {
   DEFAULT_MAP_CENTER,
   DEFAULT_QUICK_ZONE_RADIUS_IDX,
@@ -18,6 +19,8 @@ import {
   fetchZoneCatches,
   formatRadius,
   leaveZone,
+  loadCachedZoneCatches,
+  loadCachedZones,
   loadZones,
   makeCirclePolygon,
   pointInPolygon,
@@ -57,6 +60,8 @@ type CatchPin = {
   weight_lbs: number | null;
   weather_conditions: string | null;
   caught_at: string;
+  /** Prise encore en file d'attente (pas confirmée par le serveur). */
+  pending?: boolean;
 };
 
 type FilterState = {
@@ -255,16 +260,24 @@ export default function MapScreen() {
   const router = useRouter();
   const { user, cachedUserId } = useAuth();
   const { t, locale, fmtWeight } = useSettings();
-  const isConnected = useNetworkStatus();
 
-  const { getColor } = useSpeciesColors();
+  const { getColor, refresh: refreshColors } = useSpeciesColors();
 
   const leafletMapRef = useRef<any>(null);
 
-  const [catches, setCatches] = useState<CatchPin[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [fromCache, setFromCache] = useState(false);
-  const [leafletReady, setLeafletReady] = useState(false);
+  // ─── Prises : magasin local (cache + file d'attente) ──────────────────────
+  // Les marqueurs s'affichent immédiatement, avec ou sans réseau. La mise à jour
+  // depuis le serveur se fait en arrière-plan SANS démonter la carte (avant,
+  // chaque retour sur l'onglet la détruisait et la recréait).
+  const { catches: allCatches, fromCache } = useCatches();
+  const catches = useMemo(
+    () =>
+      allCatches.filter(
+        (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+      ) as CatchPin[],
+    [allCatches],
+  );
+
   const [satellite, setSatellite] = useState(false);
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [openPanel, setOpenPanel] = useState<FilterPanel>(null);
@@ -298,70 +311,16 @@ export default function MapScreen() {
   const activeZone = mapSource !== 'mine' ? zones.find((z) => z.id === mapSource) ?? null : null;
   const isOwnActiveZone = activeZone != null && activeZone.owner_id === myId;
 
-  // ─── CSS Leaflet ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (document.getElementById('leaflet-css')) { setLeafletReady(true); return; }
-    const link = document.createElement('link');
-    link.id = 'leaflet-css';
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    link.onload = () => setLeafletReady(true);
-    document.head.appendChild(link);
-  }, []);
-
-  // ─── Chargement ─────────────────────────────────────────────────────────────
-  const loadCatches = useCallback(async () => {
-    const userId = user?.id ?? cachedUserId;
-    if (!userId) return;
-    setLoading(true);
-
-    // Pas de session active ou hors-ligne → toujours utiliser le cache
-    if (!user?.id || isConnected === false) {
-      const cached = await loadCatchesCache(userId);
-      if (cached) {
-        setCatches(cached.filter(
-          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-        ) as CatchPin[]);
-        setFromCache(true);
-      }
-      setLoading(false);
-      return;
-    }
-
-    setFromCache(false);
-    try {
-      const { data, error } = await supabase
-        .from('catches')
-        .select(CATCH_SELECT_ALL)
-        .eq('user_id', userId)
-        .order('caught_at', { ascending: false });
-      if (error) {
-        console.warn('[Map web]', error);
-        const cached = await loadCatchesCache(userId);
-        if (cached) {
-          setCatches(cached.filter(
-            (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-          ) as CatchPin[]);
-          setFromCache(true);
-        }
-        return;
-      }
-      setCatches(((data ?? []) as unknown as CatchPin[]).filter(
-        (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-      ));
-      await saveCatchesCache(userId, data as never);
-    } finally {
-      setLoading(false);
-    }
-  }, [user?.id, cachedUserId, isConnected]);
-
-  useFocusEffect(useCallback(() => { loadCatches().catch(console.warn); }, [loadCatches]));
+  // Couleurs personnalisées : relues à chaque retour sur la carte
+  useFocusEffect(useCallback(() => { refreshColors(); }, [refreshColors]));
 
   // ─── Zones : chargement + dessin (clic sur la carte Leaflet) ──────────────
 
   const refreshZones = useCallback(async () => {
     if (!myId) return;
+    // Zones mémorisées d'abord (immédiat), puis état du serveur s'il répond
+    const cached = await loadCachedZones(myId);
+    setZones((prev) => (prev.length === 0 ? cached : prev));
     const loaded = await loadZones(myId);
     setZones(loaded);
     setMapSource((prev) => (prev === 'mine' || loaded.some((z) => z.id === prev) ? prev : 'mine'));
@@ -394,12 +353,18 @@ export default function MapScreen() {
     let cancelled = false;
     (async () => {
       setZoneLoading(true);
+      const toPins = (rows: { latitude: number | null; longitude: number | null }[]) =>
+        rows.filter(
+          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+        ) as unknown as CatchPin[];
       try {
+        // Dernier résultat connu d'abord, puis mise à jour si le serveur répond
+        const cached = await loadCachedZoneCatches(activeZone.id);
+        if (cancelled) return;
+        if (cached.length > 0) setZoneCatches(toPins(cached));
         const rows = await fetchZoneCatches(activeZone.id);
         if (cancelled) return;
-        setZoneCatches(rows.filter(
-          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-        ) as unknown as CatchPin[]);
+        setZoneCatches(toPins(rows));
       } finally {
         if (!cancelled) setZoneLoading(false);
       }
@@ -615,9 +580,14 @@ export default function MapScreen() {
     setMapBounds({ lat: latDelta, lng: lngDelta });
   }, []);
 
-  if (loading || !leafletReady) {
-    return <View style={styles.center}><ActivityIndicator color={ACCENT} size="large" /></View>;
-  }
+  const fitAll = () => {
+    if (visibleCatches.length === 0 || !leafletMapRef.current) return;
+    const L = require('leaflet');
+    leafletMapRef.current.fitBounds(
+      L.latLngBounds(visibleCatches.map((c) => [c.latitude, c.longitude])),
+      { padding: [40, 40] },
+    );
+  };
 
   // ─── Panneau d'options ──────────────────────────────────────────────────────
   const renderPanel = () => {
@@ -948,6 +918,11 @@ export default function MapScreen() {
                     <Popup>
                       <div style={{ fontFamily: 'sans-serif', minWidth: 140 }}>
                         <strong style={{ fontSize: 14 }}>{singleCatch.species}</strong>
+                        {singleCatch.pending && (
+                          <div style={{ marginTop: 4, fontSize: 12, fontWeight: 600, color: '#B26A00' }}>
+                            ⏳ {t('sync.pendingBadge')}
+                          </div>
+                        )}
                         {singleCatch.lake_name && <div style={{ marginTop: 4, fontSize: 12 }}>📍 {singleCatch.lake_name}</div>}
                         {singleCatch.lure && <div style={{ fontSize: 12 }}>🪝 {singleCatch.lure}</div>}
                         {singleCatch.weight_lbs != null && <div style={{ fontSize: 12 }}>⚖️ {fmtWeight(singleCatch.weight_lbs)}</div>}
@@ -1204,6 +1179,23 @@ export default function MapScreen() {
         }}>
           ☁️ {t('home.localData')}
         </div>
+      )}
+
+      {/* Recadrer sur toutes les prises affichées */}
+      {!drawing && visibleCatches.length > 0 && (
+        <button
+          onClick={fitAll}
+          title={t('map.fitAll')}
+          aria-label={t('map.fitAll')}
+          style={{
+            position: 'absolute', bottom: 68, right: 14, zIndex: 1000,
+            width: 38, height: 38, borderRadius: 19, cursor: 'pointer',
+            background: 'rgba(6,20,37,0.88)', color: '#fff', fontSize: 16,
+            border: '1px solid rgba(255,255,255,0.18)',
+          }}
+        >
+          ⤢
+        </button>
       )}
 
       {/* Bouton satellite */}

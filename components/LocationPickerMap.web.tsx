@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+// Feuille de style Leaflet embarquée dans le bundle (pas de CDN)
+import 'leaflet/dist/leaflet.css';
 
 // Chargement dynamique pour éviter les erreurs SSR
 let MapContainer: any = null;
@@ -54,26 +56,10 @@ function makePinIcon() {
 }
 
 export default function LocationPickerMap({ coordinate, onCoordinateChange, height }: Props) {
-  const [leafletReady, setLeafletReady] = useState(false);
   const [satellite, setSatellite] = useState(true);
   const markerRef = useRef<any>(null);
 
-  // Injecter le CSS Leaflet (réutilise le même tag que map.web.tsx)
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (document.getElementById('leaflet-css')) {
-      setLeafletReady(true);
-      return;
-    }
-    const link = document.createElement('link');
-    link.id = 'leaflet-css';
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    link.onload = () => setLeafletReady(true);
-    document.head.appendChild(link);
-  }, []);
-
-  if (!leafletReady || !MapContainer) return null;
+  if (!MapContainer) return null;
 
   const tiles = satellite ? TILES.satellite : TILES.standard;
 

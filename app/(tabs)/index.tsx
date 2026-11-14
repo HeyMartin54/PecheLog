@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -8,21 +8,23 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ConnectionBadge from '@/components/ConnectionBadge';
+import SyncStatusBanner from '@/components/SyncStatusBanner';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
 import { displayWeight } from '@/lib/settingsStorage';
+import { useCatches } from '@/lib/hooks/useCatches';
 import { useLocation } from '@/lib/hooks/useLocation';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { useWeather } from '@/lib/hooks/useWeather';
+import { withTimeout } from '@/lib/net';
 import { supabase } from '@/lib/supabase';
-import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors, typography, spacing, radius, shadow } from '@/lib/theme';
 import { getSpeciesConfig } from '@/lib/species';
 
@@ -39,7 +41,34 @@ type CatchRow = {
   lure: string | null;
   weight_lbs: number | null;
   caught_at: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  pending?: boolean;
 };
+
+const displayNameKey = (userId: string) => `@pechelog_display_name_${userId}`;
+
+/**
+ * Nom du lac de la prise connue la plus proche (≤ 5 km). Permet d'afficher un
+ * vrai nom de lac sans réseau, quand le géocodage en ligne est impossible.
+ */
+function nearestKnownLake(
+  catches: CatchRow[],
+  latitude: number,
+  longitude: number,
+): string | null {
+  const cosLat = Math.cos((latitude * Math.PI) / 180);
+  let best: { name: string; km: number } | null = null;
+  for (const c of catches) {
+    const name = c.lake_name?.trim();
+    if (!name || typeof c.latitude !== 'number' || typeof c.longitude !== 'number') continue;
+    const dLat = (c.latitude - latitude) * 111.32;
+    const dLng = (c.longitude - longitude) * 111.32 * cosLat;
+    const km = Math.sqrt(dLat * dLat + dLng * dLng);
+    if (km <= 5 && (!best || km < best.km)) best = { name, km };
+  }
+  return best?.name ?? null;
+}
 
 type Translator = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -127,105 +156,85 @@ const speciesAvatarStyles = StyleSheet.create({
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { user, cachedUserId } = useAuth();
+  const { user, cachedUserId, cachedEmail } = useAuth();
   const insets = useSafeAreaInsets();
-  const { coords, lakeName } = useLocation();
-  const { temperatureC, windKmh, windDirection } = useWeather(
+  const { coords, lakeName, loading: locationLoading } = useLocation();
+  const { temperatureC, windKmh, windDirection, loading: weatherLoading } = useWeather(
     coords?.coords.latitude ?? null,
     coords?.coords.longitude ?? null,
   );
   const isConnected = useNetworkStatus();
   const { settings, t, locale, fmtWeight, fmtTemp } = useSettings();
 
-  const [displayName, setDisplayName] = useState<string | null>(null);
-  const [summary, setSummary] = useState<HomeSummary | null>(null);
-  const [recentCatches, setRecentCatches] = useState<CatchRow[]>([]);
-  const [homeDataLoading, setHomeDataLoading] = useState(false);
-  const [fromCache, setFromCache] = useState(false);
+  // Prises : lues localement (cache + file d'attente), jamais bloquées par le réseau
+  const { catches, loading: homeDataLoading, fromCache } = useCatches();
+  const list = catches as CatchRow[];
 
-  const applyList = (list: CatchRow[]) => {
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const knownUserId = user?.id ?? cachedUserId;
+
+  const summary = useMemo<HomeSummary>(() => {
     const lakeSet = new Set(
       list.map((r) => r.lake_name?.trim()).filter((n): n is string => !!n?.length),
     );
     const weights = list
       .map((r) => r.weight_lbs)
       .filter((w): w is number => typeof w === 'number' && !Number.isNaN(w));
-    const recordLb = weights.length > 0 ? Math.max(...weights) : null;
+    return {
+      count: list.length,
+      lakes: lakeSet.size,
+      recordLb: weights.length > 0 ? Math.max(...weights) : null,
+    };
+  }, [list]);
 
-    setSummary({ count: list.length, lakes: lakeSet.size, recordLb });
-    setRecentCatches(list.slice(0, 5));
-  };
+  const recentCatches = useMemo(() => list.slice(0, 5), [list]);
 
-  const loadHomeData = useCallback(async () => {
-    const effectiveUserId = user?.id ?? cachedUserId;
-    if (!effectiveUserId) return;
-    setHomeDataLoading(true);
+  // Nom affiché : valeur mémorisée d'abord (disponible hors-ligne), puis mise à
+  // jour depuis le profil quand une session et le réseau sont disponibles.
+  useEffect(() => {
+    if (!knownUserId) { setDisplayName(null); return; }
+    let cancelled = false;
+    const fallback = (user?.email ?? cachedEmail)?.split('@')[0] ?? null;
 
-    // Pas de session active ou hors-ligne → toujours utiliser le cache
-    if (!user?.id || isConnected === false) {
-      const cached = await loadCatchesCache(effectiveUserId);
-      if (cached) {
-        applyList(cached as CatchRow[]);
-        setFromCache(true);
-      }
-      setHomeDataLoading(false);
-      return;
+    AsyncStorage.getItem(displayNameKey(knownUserId))
+      .then((stored) => { if (!cancelled) setDisplayName(stored?.trim() || fallback); })
+      .catch(() => { if (!cancelled) setDisplayName(fallback); });
+
+    if (user?.id && isConnected !== false) {
+      withTimeout(
+        supabase.from('profiles').select('display_name').eq('id', user.id).maybeSingle(),
+        8000,
+        'profil',
+      )
+        .then(({ data, error }) => {
+          if (cancelled || error) return;
+          const name = data?.display_name?.trim();
+          if (name) {
+            setDisplayName(name);
+            AsyncStorage.setItem(displayNameKey(user.id), name).catch(() => undefined);
+          }
+        })
+        .catch(() => undefined);
     }
+    return () => { cancelled = true; };
+  }, [knownUserId, user?.id, user?.email, cachedEmail, isConnected]);
 
-    setFromCache(false);
-    try {
-      if (user?.id) {
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('display_name')
-          .eq('id', user.id)
-          .maybeSingle();
+  // Sans réseau, pas de géocodage : on retombe sur le lac de la prise la plus proche
+  const offlineLakeName = useMemo(() => {
+    if (lakeName || !coords) return null;
+    return nearestKnownLake(list, coords.coords.latitude, coords.coords.longitude);
+  }, [lakeName, coords, list]);
 
-        if (profileError) {
-          console.warn('[Home] Erreur profil', profileError);
-        } else if (profile?.display_name?.trim()) {
-          setDisplayName(profile.display_name.trim());
-        } else if (user.email) {
-          setDisplayName(user.email.split('@')[0] ?? null);
-        }
-      }
-
-      const { data: rows, error: catchesError } = await supabase
-        .from('catches')
-        .select(CATCH_SELECT_ALL)
-        .eq('user_id', effectiveUserId)
-        .order('caught_at', { ascending: false });
-
-      if (catchesError) {
-        console.warn('[Home] Erreur prises', catchesError);
-        // Fallback cache si erreur réseau inattendue
-        const cached = await loadCatchesCache(effectiveUserId);
-        if (cached) { applyList(cached as CatchRow[]); setFromCache(true); }
-        return;
-      }
-
-      const list = (rows ?? []) as unknown as CatchRow[];
-      applyList(list);
-      // Sauvegarder dans le cache pour la prochaine utilisation hors-ligne
-      await saveCatchesCache(effectiveUserId, list as never);
-    } finally {
-      setHomeDataLoading(false);
-    }
-  }, [user?.id, user?.email, cachedUserId, isConnected]);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadHomeData().catch(console.warn);
-    }, [loadHomeData]),
-  );
-
-  const headerLakeName = lakeName ?? t('home.unknownLake');
+  const headerLakeName = lakeName ?? offlineLakeName ?? t('home.unknownLake');
   const headerTemp =
     temperatureC != null ? fmtTemp(temperatureC) : null;
   const headerWind =
     windKmh != null
       ? `${windDirection ? windDirection + ' ' : ''}${windKmh.toFixed(1)} km/h`
       : null;
+  // La météo exige le réseau : on n'affiche un indicateur d'attente que tant
+  // qu'une réponse est réellement possible.
+  const weatherPending = (locationLoading || weatherLoading) && isConnected !== false;
 
   const stats = [
     { label: t('home.statCatches'), value: summary ? String(summary.count) : '—', icon: 'fish' },
@@ -279,8 +288,14 @@ export default function HomeScreen() {
               )}
               {!headerTemp && !headerWind && (
                 <View style={styles.weatherBadge}>
-                  <ActivityIndicator size="small" color={colors.accent} />
-                  <Text style={styles.weatherBadgeText}>{t('home.weatherLoading')}</Text>
+                  {weatherPending ? (
+                    <ActivityIndicator size="small" color={colors.accent} />
+                  ) : (
+                    <Ionicons name="cloud-offline-outline" size={13} color={colors.accent} />
+                  )}
+                  <Text style={styles.weatherBadgeText}>
+                    {weatherPending ? t('home.weatherLoading') : t('home.weatherUnavailable')}
+                  </Text>
                 </View>
               )}
             </View>
@@ -302,6 +317,9 @@ export default function HomeScreen() {
           </View>
           <Ionicons name="chevron-forward" size={20} color={`${colors.bg}AA`} />
         </TouchableOpacity>
+
+        {/* ── État de la synchronisation (rien si tout est à jour) ──────────── */}
+        <SyncStatusBanner />
 
         {/* ── Stats ─────────────────────────────────────────────────────────── */}
         <View style={styles.statsRow}>
@@ -362,6 +380,12 @@ export default function HomeScreen() {
                   <View style={styles.catchInfo}>
                     <View style={styles.catchTopRow}>
                       <Text style={styles.catchSpecies}>{catchItem.species}</Text>
+                      {catchItem.pending ? (
+                        <View style={styles.pendingBadge}>
+                          <Ionicons name="time-outline" size={11} color={colors.warning} />
+                          <Text style={styles.pendingBadgeText}>{t('sync.pendingShort')}</Text>
+                        </View>
+                      ) : null}
                       {size ? (
                         <View style={styles.catchSizeBadge}>
                           <Text style={styles.catchSizeText}>{size}</Text>
@@ -602,6 +626,20 @@ const styles = StyleSheet.create({
   catchSizeText: {
     ...typography.label,
     color: colors.textMuted,
+  },
+  pendingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: radius.full,
+    backgroundColor: colors.warningSubtle,
+  },
+  pendingBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.warning,
   },
   catchMeta: {
     ...typography.bodySmall,

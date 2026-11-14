@@ -100,6 +100,25 @@ async function loadZonesCache(userId: string): Promise<SharedZone[] | null> {
   }
 }
 
+/**
+ * Zones mémorisées sur l'appareil (lecture immédiate, aucun réseau).
+ * À afficher AVANT d'appeler loadZones(), qui peut attendre le serveur ~10 s
+ * avec un signal faible.
+ */
+export async function loadCachedZones(userId: string): Promise<SharedZone[]> {
+  return (await loadZonesCache(userId)) ?? [];
+}
+
+/** Dernières prises connues d'une zone reçue (lecture immédiate, aucun réseau). */
+export async function loadCachedZoneCatches(zoneId: string): Promise<CachedCatch[]> {
+  try {
+    const raw = await AsyncStorage.getItem(zoneCatchesCacheKey(zoneId));
+    return raw ? (JSON.parse(raw) as CachedCatch[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 // ─── API zones ────────────────────────────────────────────────────────────────
 
 /**
@@ -242,10 +261,5 @@ export async function fetchZoneCatches(zoneId: string): Promise<CachedCatch[]> {
   } catch (e) {
     console.warn('[Zones] fetchZoneCatches network error:', e);
   }
-  try {
-    const raw = await AsyncStorage.getItem(zoneCatchesCacheKey(zoneId));
-    return raw ? (JSON.parse(raw) as CachedCatch[]) : [];
-  } catch {
-    return [];
-  }
+  return loadCachedZoneCatches(zoneId);
 }

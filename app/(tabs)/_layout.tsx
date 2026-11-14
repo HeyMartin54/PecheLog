@@ -7,7 +7,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
-import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { colors } from '@/lib/theme';
 
 function TabBarIcon(props: {
@@ -37,20 +36,19 @@ const tabIconStyles = StyleSheet.create({
 
 export default function TabLayout() {
   const router = useRouter();
-  const { session, initializing, cachedUserId } = useAuth();
+  const { sessionStatus } = useAuth();
   const { t } = useSettings();
-  const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
-    if (!initializing && !session) {
-      // Hors-ligne avec un userId connu → accès en lecture seule au cache, pas de redirect
-      const hasOfflineAccess = isConnected === false && cachedUserId !== null;
-      if (!hasOfflineAccess) {
-        router.replace('/login');
-      }
+    // L'accès à l'app dépend de l'IDENTITÉ LOCALE, jamais de l'état du réseau :
+    // un utilisateur déjà connu sur l'appareil entre toujours (session valide,
+    // en cours de restauration, ou expirée). Seul un appareil sans utilisateur
+    // connu est renvoyé vers le login.
+    if (sessionStatus === 'signedOut') {
+      router.replace('/login');
     }
-  }, [session, initializing, isConnected, cachedUserId, router]);
+  }, [sessionStatus, router]);
 
   return (
     <Tabs

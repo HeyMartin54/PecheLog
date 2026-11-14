@@ -22,10 +22,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useMarkerIcons, CLUSTER_ANCHOR, type MarkerSpec } from '@/components/MarkerIconFactory';
-import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { useCatches } from '@/lib/hooks/useCatches';
 import { useSpeciesColors } from '@/lib/hooks/useSpeciesColors';
-import { supabase } from '@/lib/supabase';
-import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import {
   DEFAULT_MAP_CENTER,
   DEFAULT_QUICK_ZONE_RADIUS_IDX,
@@ -35,6 +33,8 @@ import {
   fetchZoneCatches,
   formatRadius,
   leaveZone,
+  loadCachedZoneCatches,
+  loadCachedZones,
   loadZones,
   makeCirclePolygon,
   pointInPolygon,
@@ -57,6 +57,8 @@ type CatchPin = {
   size_category: string | null;
   weather_conditions: string | null;
   caught_at: string;
+  /** Prise encore en file d'attente (pas confirmée par le serveur). */
+  pending?: boolean;
 };
 
 type FilterState = {
@@ -182,23 +184,34 @@ export default function MapScreen() {
   const router = useRouter();
   const { user, cachedUserId } = useAuth();
   const { t, locale, fmtWeight } = useSettings();
-  const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapRef = useRef<any>(null);
   // Dernière région affichée — sert de centre au mode « Zone rapide »
   const lastRegionRef = useRef<Region | null>(null);
 
-  const { getColor } = useSpeciesColors();
+  const { getColor, refresh: refreshColors } = useSpeciesColors();
 
-  const [catches, setCatches] = useState<CatchPin[]>([]);
-  const [loading, setLoading] = useState(true);
+  // ─── Prises : magasin local (cache + file d'attente) ──────────────────────
+  // Les marqueurs s'affichent immédiatement, avec ou sans réseau, y compris les
+  // prises saisies hors-ligne. La mise à jour depuis le serveur se fait en
+  // arrière-plan : elle ne bloque ni la carte ni les gestes, et ne déplace
+  // jamais la caméra.
+  const { catches: allCatches, loading, fromCache } = useCatches();
+  const catches = useMemo(
+    () =>
+      allCatches.filter(
+        (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+      ) as CatchPin[],
+    [allCatches],
+  );
+
+  const [mapReady, setMapReady] = useState(false);
   const [satellite, setSatellite] = useState(false);
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [openPanel, setOpenPanel] = useState<FilterPanel>(null);
   const [showDatePicker, setShowDatePicker] = useState<'from' | 'to' | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const [selectedCatch, setSelectedCatch] = useState<CatchPin | null>(null);
+  const [selectedCatchId, setSelectedCatchId] = useState<string | null>(null);
   const [mapDeltas, setMapDeltas] = useState({ lat: 8, lng: 8 });
   const [lakeQuery, setLakeQuery] = useState('');
 
@@ -224,75 +237,38 @@ export default function MapScreen() {
   const activeZone = mapSource !== 'mine' ? zones.find((z) => z.id === mapSource) ?? null : null;
   const isOwnActiveZone = activeZone != null && activeZone.owner_id === myId;
 
-  // ─── Chargement ────────────────────────────────────────────────────────────
+  // Couleurs personnalisées : relues à chaque retour sur la carte (elles ont pu
+  // être modifiées dans Réglages > Espèces & marqueurs).
+  useFocusEffect(useCallback(() => { refreshColors(); }, [refreshColors]));
 
-  const loadCatches = useCallback(async () => {
-    const userId = user?.id ?? cachedUserId;
-    if (!userId) return;
-    setLoading(true);
+  // ─── Cadrage initial ───────────────────────────────────────────────────────
+  // Une seule fois, quand la carte est prête et que des prises sont connues.
+  // Ensuite la caméra appartient à l'utilisateur : revenir sur l'onglet ou
+  // recevoir une mise à jour ne la déplace plus.
+  const didInitialFit = useRef(false);
+  useEffect(() => { didInitialFit.current = false; }, [myId]);
+  useEffect(() => {
+    if (didInitialFit.current || !mapReady || catches.length === 0) return;
+    const region = computeRegion(catches);
+    if (!region) return;
+    const timer = setTimeout(() => {
+      didInitialFit.current = true;
+      mapRef.current?.animateToRegion(region, 700);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [catches, mapReady]);
 
-    // Pas de session active ou hors-ligne → toujours utiliser le cache
-    if (!user?.id || isConnected === false) {
-      const cached = await loadCatchesCache(userId);
-      if (cached) {
-        const valid = cached.filter(
-          (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-        ) as CatchPin[];
-        setCatches(valid);
-        setFromCache(true);
-        const region = computeRegion(valid);
-        if (region) setTimeout(() => mapRef.current?.animateToRegion(region, 700), 400);
-      }
-      setLoading(false);
-      return;
-    }
-
-    setFromCache(false);
-    try {
-      const { data, error } = await supabase
-        .from('catches')
-        .select(CATCH_SELECT_ALL)
-        .eq('user_id', userId)
-        .order('caught_at', { ascending: false });
-
-      if (error) {
-        console.warn('[Map] Erreur', error);
-        // Fallback cache si erreur réseau inattendue
-        const cached = await loadCatchesCache(userId);
-        if (cached) {
-          const valid = cached.filter(
-            (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-          ) as CatchPin[];
-          setCatches(valid);
-          setFromCache(true);
-          const region = computeRegion(valid);
-          if (region) setTimeout(() => mapRef.current?.animateToRegion(region, 700), 400);
-        }
-        return;
-      }
-
-      const valid = ((data ?? []) as unknown as CatchPin[]).filter(
-        (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
-      );
-      setCatches(valid);
-      setFromCache(false);
-
-      // Sauvegarder dans le cache
-      await saveCatchesCache(userId, data as never);
-
-      const region = computeRegion(valid);
-      if (region) setTimeout(() => mapRef.current?.animateToRegion(region, 700), 400);
-    } finally {
-      setLoading(false);
-    }
-  }, [user?.id, cachedUserId, isConnected]);
-
-  useFocusEffect(useCallback(() => { loadCatches().catch(console.warn); }, [loadCatches]));
+  const setSelectedCatch = useCallback((c: CatchPin | null) => {
+    setSelectedCatchId(c ? c.id : null);
+  }, []);
 
   // ─── Chargement des zones ──────────────────────────────────────────────────
 
   const refreshZones = useCallback(async () => {
     if (!myId) return;
+    // Zones mémorisées d'abord (immédiat), puis état du serveur s'il répond
+    const cached = await loadCachedZones(myId);
+    setZones((prev) => (prev.length === 0 ? cached : prev));
     const loaded = await loadZones(myId);
     setZones(loaded);
     // La zone affichée a pu être supprimée / quittée → retour à ma carte
@@ -307,13 +283,18 @@ export default function MapScreen() {
     let cancelled = false;
     (async () => {
       setZoneLoading(true);
-      try {
-        const rows = await fetchZoneCatches(activeZone.id);
-        if (cancelled) return;
-        const valid = rows.filter(
+      const toPins = (rows: { latitude: number | null; longitude: number | null }[]) =>
+        rows.filter(
           (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
         ) as unknown as CatchPin[];
-        setZoneCatches(valid);
+      try {
+        // Dernier résultat connu d'abord, puis mise à jour si le serveur répond
+        const cached = await loadCachedZoneCatches(activeZone.id);
+        if (cancelled) return;
+        if (cached.length > 0) setZoneCatches(toPins(cached));
+        const rows = await fetchZoneCatches(activeZone.id);
+        if (cancelled) return;
+        setZoneCatches(toPins(rows));
       } finally {
         if (!cancelled) setZoneLoading(false);
       }
@@ -567,6 +548,18 @@ export default function MapScreen() {
   }, [baseCatches, filters]);
 
   const activeCount = countActiveFilters(filters);
+
+  // La prise sélectionnée est relue dans la liste courante : son statut
+  // « en attente » se met à jour dès qu'elle est synchronisée.
+  const selectedCatch = useMemo(
+    () => (selectedCatchId ? baseCatches.find((c) => c.id === selectedCatchId) ?? null : null),
+    [selectedCatchId, baseCatches],
+  );
+
+  const fitAll = useCallback(() => {
+    const region = computeRegion(visibleCatches);
+    if (region) mapRef.current?.animateToRegion(region, 600);
+  }, [visibleCatches]);
 
   const clusters = useMemo(
     () => clusterCatches(visibleCatches, mapDeltas.lat, mapDeltas.lng),
@@ -916,6 +909,7 @@ export default function MapScreen() {
         initialRegion={{ latitude: 47.5, longitude: -71.5, latitudeDelta: 8, longitudeDelta: 8 }}
         showsUserLocation
         showsMyLocationButton
+        onMapReady={() => setMapReady(true)}
         onPress={(e) => {
           if (drawing) {
             const { latitude, longitude } = e.nativeEvent.coordinate;
@@ -993,15 +987,19 @@ export default function MapScreen() {
           // ── Prise unique : épingle custom d'origine (fiable, fonctionnait bien) ──
           if (!isCluster) {
             const singleCatch = cluster.catches[0];
+            const pinColor = getColor(singleCatch.species);
             return (
               <TrackedMarker
-                key={cluster.id}
+                // La couleur fait partie de la clé : si une couleur personnalisée
+                // arrive après la capture du marqueur, il est recréé (sinon
+                // l'ancienne image resterait figée).
+                key={`${cluster.id}:${pinColor}`}
                 coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
                 anchor={{ x: 0.5, y: 1 }}
                 onPress={(e) => { e.stopPropagation(); setSelectedCatch(singleCatch); setOpenPanel(null); }}
               >
                 <View style={styles.pinContainer}>
-                  <View style={[styles.pinShape, { backgroundColor: getColor(singleCatch.species) }]}>
+                  <View style={[styles.pinShape, { backgroundColor: pinColor }]}>
                     <View style={styles.pinDot} />
                   </View>
                 </View>
@@ -1032,7 +1030,7 @@ export default function MapScreen() {
           if (!uri) {
             return (
               <TrackedMarker
-                key={`${cluster.id}:ph`}
+                key={`${cluster.id}:ph:${clusterColor}`}
                 coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
                 anchor={{ x: 0.5, y: 1 }}
                 onPress={zoomToCluster}
@@ -1078,6 +1076,9 @@ export default function MapScreen() {
             <View style={[styles.calloutAccent, { backgroundColor: getColor(selectedCatch.species) }]} />
             <View style={styles.calloutBody}>
               <Text style={styles.calloutSpecies}>{selectedCatch.species}</Text>
+              {selectedCatch.pending && (
+                <Text style={styles.calloutPending}>⏳ {t('sync.pendingBadge')}</Text>
+              )}
               {!!selectedCatch.lake_name && <Text style={styles.calloutRow}>📍 {selectedCatch.lake_name}</Text>}
               {!!selectedCatch.lure && <Text style={styles.calloutRow}>🪝 {selectedCatch.lure}</Text>}
               {selectedCatch.weight_lbs != null && (
@@ -1106,6 +1107,19 @@ export default function MapScreen() {
       <TouchableOpacity style={styles.satelliteBtn} onPress={() => setSatellite((v) => !v)} activeOpacity={0.85}>
         <Text style={styles.satelliteBtnText}>{satellite ? t('map.standard') : t('map.satellite')}</Text>
       </TouchableOpacity>
+
+      {/* Recadrer sur toutes les prises affichées (la caméra n'est plus
+          recadrée automatiquement à chaque retour sur l'onglet) */}
+      {!drawing && visibleCatches.length > 0 && (
+        <TouchableOpacity
+          style={styles.fitAllBtn}
+          onPress={fitAll}
+          activeOpacity={0.85}
+          accessibilityLabel={t('map.fitAll')}
+        >
+          <Ionicons name="scan-outline" size={18} color={colors.textPrimary} />
+        </TouchableOpacity>
+      )}
 
       {/* Barre de filtres (masquée en mode dessin) */}
       {!drawing && (
@@ -1346,10 +1360,11 @@ export default function MapScreen() {
         </View>
       )}
 
-      {/* Loading */}
+      {/* Lecture locale en cours (quelques ms) : indicateur discret qui ne capte
+          AUCUN geste — la carte reste utilisable en toutes circonstances. */}
       {loading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator color={ACCENT} size="large" />
+        <View style={styles.loadingPill} pointerEvents="none">
+          <ActivityIndicator color={ACCENT} size="small" />
         </View>
       )}
 
@@ -1440,6 +1455,7 @@ const styles = StyleSheet.create({
   calloutSpecies: { fontSize: 15, fontWeight: '700', color: '#0D1E2F', marginBottom: 5 },
   calloutRow: { fontSize: 13, color: '#3A5068', marginBottom: 3 },
   calloutDate: { marginTop: 4, fontSize: 11, color: '#6B8BA4' },
+  calloutPending: { fontSize: 12, fontWeight: '600', color: '#B26A00', marginBottom: 3 },
   calloutLink: { fontSize: 22, color: colors.accent, fontWeight: '700' },
 
   // ── Barre de filtres ──
@@ -1890,11 +1906,30 @@ const styles = StyleSheet.create({
   satelliteBtnText: { color: colors.textPrimary, fontSize: 13, fontWeight: '600' },
 
   // ── Loading ──
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(6,15,26,0.5)',
+  loadingPill: {
+    position: 'absolute',
+    bottom: 68,
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(6,15,26,0.85)',
+  },
+
+  // ── Tout voir ──
+  fitAllBtn: {
+    position: 'absolute',
+    bottom: 76,
+    right: 14,
+    zIndex: 5,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(6,15,26,0.9)',
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
   },
 
   // ── Empty ──

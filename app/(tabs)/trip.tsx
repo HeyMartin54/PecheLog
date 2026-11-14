@@ -19,11 +19,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
 import { loadCatchesCache } from '@/lib/catchCache';
 import { getPositionSafe } from '@/lib/locationSafe';
-import { loadLuresWithCache, type UserLure } from '@/lib/lureStorage';
+import { watchLures, type UserLure } from '@/lib/lureStorage';
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { reverseGeocodeLakeName } from '@/lib/hooks/useLocation';
-import { fetchWithTimeout, isOnline, withTimeout } from '@/lib/net';
-import { enqueueOfflineCatch, getQueuedTripCatchCount } from '@/lib/offlineSync';
+import { isOnline, withTimeout } from '@/lib/net';
+import { enqueueCatch, getQueuedTripCatchCount } from '@/lib/offlineSync';
+import type { CatchPayload } from '@/lib/types';
+import { generateUuid } from '@/lib/uuid';
 import { getSpeciesConfig, SPECIES_CONFIG } from '@/lib/species';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import {
@@ -34,36 +36,14 @@ import {
   generateTripId,
   loadLastCatchSettings,
   loadTripHistory,
+  refreshTripsFromServer,
   saveActiveTrip,
   saveLastCatchSettings,
   savePrefillTrip,
-  syncLocalTripsToSupabase,
 } from '@/lib/tripStorage';
 import { supabase } from '@/lib/supabase';
 
 type QuickCatchState = 'idle' | 'loading' | 'success';
-
-async function fetchWeatherQuick(
-  latitude: number,
-  longitude: number,
-): Promise<{ tempC: number | null; windKmh: number | null } | null> {
-  const apiKey = process.env.EXPO_PUBLIC_OPENWEATHER_API_KEY;
-  if (!apiKey) return null;
-  try {
-    const res = await fetchWithTimeout(
-      `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&units=metric&appid=${apiKey}`,
-      {},
-      8000,
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const tempC = typeof data?.main?.temp === 'number' ? data.main.temp : null;
-    const windMs = typeof data?.wind?.speed === 'number' ? data.wind.speed : null;
-    return { tempC, windKmh: windMs != null ? windMs * 3.6 : null };
-  } catch {
-    return null;
-  }
-}
 
 /** Nom du lac le plus proche (best-effort, null si indisponible ou hors-ligne). */
 async function fetchGpsLakeNameQuick(): Promise<string | null> {
@@ -85,11 +65,16 @@ async function fetchGpsLakeNameQuick(): Promise<string | null> {
  * Fallback par date (Date.parse, pas de comparaison lexicographique) pour les
  * entrées de cache écrites avant l'ajout du champ trip_id.
  */
-async function countTripCatches(trip: Trip, userId: string | null): Promise<number | null> {
+async function countTripCatches(
+  trip: Trip,
+  userId: string | null,
+  hasSession: boolean,
+): Promise<number | null> {
   if (!userId) return null;
   const queued = await getQueuedTripCatchCount(trip.id);
   try {
-    if (await isOnline()) {
+    // Le décompte serveur exige une session ; sinon on passe au cache local
+    if (hasSession && (await isOnline())) {
       const { count, error } = await withTimeout(
         supabase
           .from('catches')
@@ -163,46 +148,48 @@ export default function TripScreen() {
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
-      const refresh = async () => {
-        setLoading(true);
-        setHistoryLoading(true);
+      const knownUserId = user?.id ?? cachedUserId;
 
-        // Migrer les voyages locaux vers Supabase AVANT de charger, sinon
-        // loadActiveTrip/loadTripHistory pourraient lire l'état serveur
-        // périmé et écraser les voyages créés/terminés hors-ligne.
-        if (isConnected === true) {
-          try {
-            await syncLocalTripsToSupabase();
-          } catch (e) {
-            console.warn('[TripScreen] syncLocalTrips error:', e);
-          }
-        }
-
-        const [active, history] = await Promise.all([
-          loadActiveTrip(),
-          loadTripHistory(),
-        ]);
-
-        if (mounted) {
-          setActiveTrip(active);
-          setLoading(false);
-          if (active) {
-            const firstSpecies = active.lakes.flatMap((l) => l.targetSpecies)[0] ?? null;
-            setQuickSpecies((prev) => prev ?? firstSpecies);
-            setQuickLure((prev) => prev ?? active.luresSelected[0] ?? null);
-            countTripCatches(active, user?.id ?? cachedUserId).then((count) => {
-              if (mounted) setTripCatchCount(count);
-            });
-          } else {
-            setTripCatchCount(null);
-          }
-          setTripHistory(history);
-          setHistoryLoading(false);
+      const apply = (active: Trip | null, history: Trip[]) => {
+        if (!mounted) return;
+        setActiveTrip(active);
+        setTripHistory(history);
+        setLoading(false);
+        setHistoryLoading(false);
+        if (active) {
+          const firstSpecies = active.lakes.flatMap((l) => l.targetSpecies)[0] ?? null;
+          setQuickSpecies((prev) => prev ?? firstSpecies);
+          setQuickLure((prev) => prev ?? active.luresSelected[0] ?? null);
+          countTripCatches(active, knownUserId, !!user?.id).then((count) => {
+            if (mounted) setTripCatchCount(count);
+          });
+        } else {
+          setTripCatchCount(null);
         }
       };
-      refresh();
-      if (user?.id) loadLuresWithCache(user.id).then(setUserLures);
-      return () => { mounted = false; };
+
+      const refresh = async () => {
+        // 1) État LOCAL : immédiat, identique avec ou sans réseau. L'écran
+        //    n'attend plus jamais le serveur pour s'afficher.
+        const [active, history] = await Promise.all([loadActiveTrip(), loadTripHistory()]);
+        apply(active, history);
+
+        // 2) Réconciliation avec le serveur en arrière-plan : pousse les
+        //    changements locaux PUIS récupère ceux d'un autre appareil. Sans
+        //    réponse du serveur, l'état local affiché reste tel quel.
+        const remote = await refreshTripsFromServer();
+        if (remote) apply(remote.active, remote.history);
+      };
+      refresh().catch((e) => {
+        console.warn('[TripScreen] chargement:', e);
+        if (mounted) { setLoading(false); setHistoryLoading(false); }
+      });
+
+      const stopLures = knownUserId ? watchLures(knownUserId, (l) => { if (mounted) setUserLures(l); }) : undefined;
+      return () => {
+        mounted = false;
+        stopLures?.();
+      };
     }, [user?.id, cachedUserId, isConnected]),
   );
 
@@ -321,21 +308,13 @@ export default function TripScreen() {
 
       const lure = quickLure ?? last?.lure ?? null;
 
-      const online = await isOnline();
+      // Pas d'appel météo ici : il faisait attendre jusqu'à 3 s avec un signal
+      // faible. La météo (température, vent, direction, ciel) est complétée par
+      // la synchronisation, à partir de l'heure et du lieu de la prise.
 
-      let tempC: number | null = null;
-      let windKmh: number | null = null;
-      if (online) {
-        try {
-          const weather = await Promise.race([
-            fetchWeatherQuick(loc.coords.latitude, loc.coords.longitude),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
-          ]);
-          if (weather) { tempC = weather.tempC; windKmh = weather.windKmh; }
-        } catch {}
-      }
-
-      const payload = {
+      const payload: CatchPayload = {
+        // UUID créé sur l'appareil : l'envoi au serveur est rejouable sans doublon
+        id: generateUuid(),
         user_id: effectiveUserId,
         map_id: null,
         trip_id: activeTrip?.id ?? null,
@@ -346,41 +325,25 @@ export default function TripScreen() {
         lake_name: null,
         depth_meters: null,
         depth_source: null,
-        temperature_c: tempC,
-        wind_speed_kmh: windKmh,
+        temperature_c: null,
+        wind_speed_kmh: null,
         wind_direction_deg: null,
-        speed_kmh: null,
+        speed_kmh: typeof loc.coords.speed === 'number' && loc.coords.speed >= 0
+          ? loc.coords.speed * 3.6
+          : null,
         weather_conditions: null,
         size_category: last?.sizeCategory ?? null,
         weight_lbs: null,
         length_inches: null,
         notes: null,
         caught_at: new Date().toISOString(),
-        local_id: `local_${Date.now()}`,
+        local_id: null,
       };
 
-      if (!online || !user?.id) {
-        // Hors-ligne → file d'attente directement, sans attendre un échec réseau
-        await enqueueOfflineCatch({ payload, media: [] });
-      } else {
-        // En ligne : insert avec annulation réelle après 15 s
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15000);
-        try {
-          const { local_id: _lid, ...insertPayload } = payload;
-          const { error } = await supabase
-            .from('catches')
-            .insert(insertPayload)
-            .abortSignal(controller.signal);
-          if (error) {
-            await enqueueOfflineCatch({ payload, media: [] });
-          }
-        } catch {
-          await enqueueOfflineCatch({ payload, media: [] });
-        } finally {
-          clearTimeout(timer);
-        }
-      }
+      // Enregistrement local (instantané, avec ou sans réseau) ; le moteur de
+      // synchronisation envoie la prise au serveur en arrière-plan. Si
+      // l'écriture locale échoue, l'erreur remonte : pas de faux « enregistré ».
+      await enqueueCatch({ payload, media: [] });
 
       await saveLastCatchSettings({
         species,
@@ -395,6 +358,7 @@ export default function TripScreen() {
       successTimer.current = setTimeout(() => setQuickState('idle'), 2500);
     } catch (e) {
       console.warn('[QuickCatch] Erreur', e);
+      Alert.alert(t('common.error'), t('log.saveFailed'));
       setQuickState('idle');
     }
   };

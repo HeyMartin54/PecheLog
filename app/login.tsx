@@ -19,7 +19,7 @@ import { colors, radius, spacing, typography } from '@/lib/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { session, initializing, cachedUserId, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
+  const { session, initializing, cachedUserId, sessionStatus, signInWithGoogle, signInWithFacebook, signInWithEmail } = useAuth();
   const { t } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
@@ -36,12 +36,14 @@ export default function LoginScreen() {
       router.replace('/(tabs)');
       return;
     }
-    // Hors-ligne sans session (token expiré, refresh impossible) mais utilisateur
-    // déjà connu → accès à l'app en mode hors-ligne (cache + file d'attente).
-    if (isConnected === false && cachedUserId) {
+    // Utilisateur déjà connu dont la session se restaure d'elle-même (jeton
+    // expiré, réseau absent) : sa place est dans l'app, pas sur cet écran.
+    // (Si la session est définitivement perdue — 'expired' — il reste ici pour
+    // se reconnecter, avec un bouton pour retourner à ses données locales.)
+    if (sessionStatus === 'restoring') {
       router.replace('/(tabs)');
     }
-  }, [initializing, session, isConnected, cachedUserId]);
+  }, [initializing, session, sessionStatus]);
 
   const handleGoogleLogin = async () => {
     if (loading) return;
@@ -136,6 +138,23 @@ export default function LoginScreen() {
         {errorMessage ? (
           <View style={styles.errorCard}>
             <Text style={styles.errorText}>{errorMessage}</Text>
+          </View>
+        ) : null}
+
+        {/* Session expirée : la reconnexion exige le réseau, mais les données
+            locales restent accessibles sans elle. */}
+        {cachedUserId && !session ? (
+          <View style={styles.offlineCard}>
+            <Text style={styles.offlineText}>
+              {isConnected === false ? t('login.offlineHint') : t('login.expiredHint')}
+            </Text>
+            <TouchableOpacity
+              style={styles.offlineButton}
+              onPress={() => router.replace('/(tabs)')}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.offlineButtonText}>{t('login.continueOffline')}</Text>
+            </TouchableOpacity>
           </View>
         ) : null}
 
@@ -285,6 +304,37 @@ const styles = StyleSheet.create({
     color: colors.error,
     fontSize: 13,
     textAlign: 'center',
+  },
+
+  // Accès aux données locales (session expirée / hors-ligne)
+  offlineCard: {
+    backgroundColor: colors.warningSubtle,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 166, 35, 0.25)',
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  offlineText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+  },
+  offlineButton: {
+    alignSelf: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  offlineButtonText: {
+    color: colors.warning,
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   // Termes

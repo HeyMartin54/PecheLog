@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ComponentProps } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -7,16 +7,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/contexts/SettingsContext';
-import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
+import { useCatches } from '@/lib/hooks/useCatches';
 import { getSpeciesConfig } from '@/lib/species';
-import { supabase } from '@/lib/supabase';
-import { CATCH_SELECT_ALL, loadCatchesCache, saveCatchesCache } from '@/lib/catchCache';
 import { colors, radius, shadow, spacing, typography } from '@/lib/theme';
 
 type IoniconName = ComponentProps<typeof Ionicons>['name'];
@@ -645,58 +641,15 @@ const recStyles = StyleSheet.create({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function StatsScreen() {
-  const { user, cachedUserId } = useAuth();
   const { t, locale, fmtWeight, fmtLength } = useSettings();
-  const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
-  const [allCatches, setAllCatches] = useState<CatchRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Prises lues localement (cache + file d'attente) : disponibles sans réseau,
+  // mises à jour en arrière-plan quand le serveur répond.
+  const { catches, loading, fromCache } = useCatches();
+  const allCatches = catches as unknown as CatchRow[];
   const [period, setPeriod] = useState<Period>('all');
   const [speciesFilter, setSpeciesFilter] = useState<string | null>(null);
   const [lakeFilter, setLakeFilter] = useState<string | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-
-  const loadData = useCallback(async () => {
-    const userId = user?.id ?? cachedUserId;
-    if (!userId) return;
-    setLoading(true);
-
-    // Pas de session active ou hors-ligne → toujours utiliser le cache
-    if (!user?.id || isConnected === false) {
-      const cached = await loadCatchesCache(userId);
-      if (cached) {
-        setAllCatches(cached as unknown as CatchRow[]);
-        setFromCache(true);
-      }
-      setLoading(false);
-      return;
-    }
-
-    setFromCache(false);
-    try {
-      const { data, error } = await supabase
-        .from('catches')
-        .select(CATCH_SELECT_ALL)
-        .eq('user_id', userId)
-        .order('caught_at', { ascending: false });
-      if (!error && data) {
-        setAllCatches(data as unknown as CatchRow[]);
-        await saveCatchesCache(userId, data as never);
-      } else if (error) {
-        // Fallback cache si erreur réseau inattendue
-        const cached = await loadCatchesCache(userId);
-        if (cached) { setAllCatches(cached as unknown as CatchRow[]); setFromCache(true); }
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [user?.id, cachedUserId, isConnected]);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadData().catch(console.warn);
-    }, [loadData]),
-  );
 
   // ── Filtered list (period + optional species/lake) ────────────────────────
   const filtered = useMemo(() => {

@@ -22,6 +22,14 @@ export type CachedCatch = {
   caught_at: string;
   // Optionnel : absent des caches écrits avant l'ajout du champ
   trip_id?: string | null;
+
+  // ── Champs LOCAUX uniquement (jamais envoyés au serveur) ──
+  /** Prise encore dans la file d'attente : pas (encore) confirmée par le serveur. */
+  pending?: boolean;
+  /** Dernière erreur de synchronisation pour cette prise, s'il y en a une. */
+  sync_error?: string | null;
+  /** Nombre de photos/vidéos locales attachées à une prise en attente. */
+  pending_media?: number;
 };
 
 // Champs à sélectionner dans Supabase pour populer un cache complet
@@ -33,10 +41,22 @@ export const CATCH_SELECT_ALL =
 const cacheKey  = (userId: string) => `catches_cache_${userId}`;
 const metaKey   = (userId: string) => `catches_cache_meta_${userId}`;
 
-export async function saveCatchesCache(userId: string, catches: CachedCatch[]): Promise<void> {
+/**
+ * Écrit le cache des prises.
+ * `syncedAt` n'est fourni que lorsque la liste vient d'un rafraîchissement
+ * COMPLET depuis le serveur : c'est la date affichée comme « dernière
+ * synchronisation ». Une retouche locale du cache ne la modifie pas.
+ */
+export async function saveCatchesCache(
+  userId: string,
+  catches: CachedCatch[],
+  syncedAt?: number,
+): Promise<void> {
   try {
     await AsyncStorage.setItem(cacheKey(userId), JSON.stringify(catches));
-    await AsyncStorage.setItem(metaKey(userId), JSON.stringify({ savedAt: Date.now() }));
+    if (syncedAt != null) {
+      await AsyncStorage.setItem(metaKey(userId), JSON.stringify({ savedAt: syncedAt }));
+    }
   } catch (e) {
     console.warn('[CatchCache] Erreur sauvegarde', e);
   }

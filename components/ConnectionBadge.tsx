@@ -1,21 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
-import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { colors } from '@/lib/theme';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 
 export default function ConnectionBadge() {
   const { t } = useSettings();
-  const [isConnected, setIsConnected] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsConnected(state.isConnected);
-    });
-    return unsubscribe;
-  }, []);
+  // « En ligne » = internet réellement utilisable. Un réseau sans accès internet
+  // (1 barre, wifi captif) est affiché « Hors-ligne », ce qu'il est en pratique.
+  const isConnected = useNetworkStatus();
 
   if (isConnected === null) return null;
 

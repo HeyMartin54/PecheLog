@@ -20,7 +20,7 @@ import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
 import {
   createUserLure,
-  loadLuresWithCache,
+  watchLures,
   setCachedLures,
   type UserLure,
 } from '@/lib/lureStorage';
@@ -46,7 +46,9 @@ import {
 export default function PlanTripScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, cachedUserId } = useAuth();
+  // Identité locale : suffit pour planifier un voyage, même hors-ligne
+  const knownUserId = user?.id ?? cachedUserId;
   const { t } = useSettings();
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const isEditMode = mode === 'edit';
@@ -73,10 +75,11 @@ export default function PlanTripScreen() {
 
   const companionInputRef = useRef<TextInput>(null);
 
+  // Leurres : liste locale immédiate, puis mise à jour si le serveur répond
   useEffect(() => {
-    if (!user?.id) return;
-    loadLuresWithCache(user.id).then(setUserLures);
-  }, [user?.id]);
+    if (!knownUserId) return;
+    return watchLures(knownUserId, setUserLures);
+  }, [knownUserId]);
 
   // Load frequent companions, then either active trip (edit) or prefill (relaunch) or GPS
   useEffect(() => {
@@ -430,14 +433,18 @@ export default function PlanTripScreen() {
       <LureFormModal
         visible={showLureForm}
         onSave={async (data) => {
-          if (!user?.id) return;
+          if (!knownUserId) return;
           setShowLureForm(false);
-          const created = await createUserLure(user.id, data);
+          // Sans réseau, le leurre est créé localement et envoyé plus tard
+          const created = await createUserLure(knownUserId, data);
           if (created) {
-            const updated = [...userLures, created].sort((a, b) => a.name.localeCompare(b.name));
+            const updated = [...userLures.filter((l) => l.id !== created.id), created]
+              .sort((a, b) => a.name.localeCompare(b.name));
             setUserLures(updated);
-            await setCachedLures(user.id, updated);
+            await setCachedLures(knownUserId, updated);
             setLuresSelected((prev) => [...prev, created.name]);
+          } else {
+            Alert.alert(t('common.error'), t('lures.createError'));
           }
         }}
         onClose={() => setShowLureForm(false)}

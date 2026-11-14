@@ -3,7 +3,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import 'react-native-reanimated';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -12,8 +12,8 @@ import { useColorScheme } from '@/components/useColorScheme';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { SettingsProvider } from '@/contexts/SettingsContext';
-import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
-import { trySyncOfflineCatches } from '@/lib/offlineSync';
+import { setCatchStoreUser } from '@/lib/catchStore';
+import { setSyncIdentity, startSyncEngine } from '@/lib/syncEngine';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -58,24 +58,23 @@ const styles = StyleSheet.create({
   },
 });
 
-// Détecte le retour en ligne et déclenche la synchronisation des prises hors-ligne
+// Branche l'identité de l'utilisateur sur les deux services locaux de l'app :
+//  - le magasin des prises (lecture locale immédiate pour tous les écrans) ;
+//  - le moteur de synchronisation (envoi de la file dès que possible).
+// Les règles de déclenchement sont dans lib/syncEngine.ts.
 function SyncManager() {
-  const { user } = useAuth();
-  const isConnected = useNetworkStatus();
-  const prevReady = useRef(false);
+  const { user, cachedUserId } = useAuth();
+  const sessionUserId = user?.id ?? null;
+  const knownUserId = sessionUserId ?? cachedUserId;
+
+  useEffect(() => startSyncEngine(), []);
 
   useEffect(() => {
-    // La sync exige connexion ET session (l'insert Supabase est authentifié).
-    // On déclenche à chaque transition vers "prêt", ce qui couvre :
-    //  - démarrage de l'app avec connexion (file restée d'une session précédente)
-    //  - retour du signal
-    //  - session restaurée APRÈS le retour du signal (token expiré hors-ligne)
-    const ready = isConnected === true && !!user?.id;
-    if (ready && !prevReady.current) {
-      trySyncOfflineCatches(user!.id);
-    }
-    prevReady.current = ready;
-  }, [isConnected, user?.id]);
+    // Les données locales sont chargées dès que l'on sait QUI est l'utilisateur,
+    // même sans session valide (hors-ligne).
+    setCatchStoreUser(knownUserId);
+    setSyncIdentity(sessionUserId, knownUserId);
+  }, [sessionUserId, knownUserId]);
 
   return null;
 }

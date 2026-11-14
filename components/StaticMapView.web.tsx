@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+// Feuille de style Leaflet embarquée dans le bundle (pas de CDN)
+import 'leaflet/dist/leaflet.css';
 
 let MapContainer: any = null;
 let TileLayer: any = null;
@@ -41,21 +43,9 @@ function makePinIcon() {
 }
 
 export default function StaticMapView({ coordinate, height = 180, onPress }: Props) {
-  const [leafletReady, setLeafletReady] = useState(false);
   const [satellite, setSatellite] = useState(true);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (document.getElementById('leaflet-css')) { setLeafletReady(true); return; }
-    const link = document.createElement('link');
-    link.id = 'leaflet-css';
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    link.onload = () => setLeafletReady(true);
-    document.head.appendChild(link);
-  }, []);
-
-  if (!leafletReady || !MapContainer) return null;
+  if (!MapContainer) return null;
 
   const tiles = satellite ? TILES.satellite : TILES.standard;
 

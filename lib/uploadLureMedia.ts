@@ -1,21 +1,11 @@
-import { supabase } from '@/lib/supabase';
+import { uploadFileToStorage } from '@/lib/uploadMedia';
 
 export async function uploadLureMedia(
   uri: string,
   userId: string,
 ): Promise<{ storagePath: string }> {
   const storagePath = `lures/${userId}/${Date.now()}.jpg`;
-
-  const response = await fetch(uri);
-  if (!response.ok) throw new Error(`[LureMedia] Impossible de lire le fichier : ${uri}`);
-
-  const blob = await response.blob();
-  const contentType = blob.type || 'image/jpeg';
-
-  const { error } = await supabase.storage
-    .from('catch-media')
-    .upload(storagePath, blob, { contentType, upsert: false });
-
-  if (error) throw error;
+  // Même mécanisme que les médias de prises (envoi natif en flux sur mobile).
+  await uploadFileToStorage(uri, storagePath, 'image/jpeg');
   return { storagePath };
 }

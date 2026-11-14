@@ -21,8 +21,8 @@ import LureFormModal from '@/components/LureFormModal';
 import LurePicker from '@/components/LurePicker';
 import {
   createUserLure,
-  loadLuresWithCache,
   setCachedLures,
+  watchLures,
   type UserLure,
 } from '@/lib/lureStorage';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -35,10 +35,11 @@ import { storeLength, storeWeight } from '@/lib/settingsStorage';
 import { useActiveSpecies } from '@/lib/hooks/useActiveSpecies';
 import { getPositionSafe } from '@/lib/locationSafe';
 import { fetchWithTimeout, isOnline } from '@/lib/net';
-import { supabase } from '@/lib/supabase';
-import { enqueueOfflineCatch, trySyncOfflineCatches, persistMediaForOffline } from '@/lib/offlineSync';
-import { uploadMediaFile } from '@/lib/uploadMedia';
+import { getCatchStoreSnapshot } from '@/lib/catchStore';
+import { enqueueCatch, persistMediaForOffline } from '@/lib/offlineSync';
 import { loadActiveTrip, saveLastCatchSettings, type Trip } from '@/lib/tripStorage';
+import { generateUuid } from '@/lib/uuid';
+import { DEFAULT_MAP_CENTER } from '@/lib/zones';
 
 // ─── FONCTIONNALITÉ NOM DU LAC (désactivée) ──────────────────────────────────
 // Nominatim + Overpass : trop lent et peu fiable en production.
@@ -58,11 +59,6 @@ const ACCENT_COLOR = colors.accent;
 const TEXT_PRIMARY = colors.textPrimary;
 const TEXT_MUTED = colors.textMuted;
 const BORDER_COLOR = colors.border;
-
-function buildCatchInsertPayload(payload: CatchPayload) {
-  const { local_id: _localId, ...insertPayload } = payload;
-  return insertPayload;
-}
 
 const WATER_CLASSES = new Set(['water', 'waterway', 'natural']);
 const WATER_TYPES = new Set(['water', 'lake', 'reservoir', 'pond', 'bay', 'river', 'stream']);
@@ -309,6 +305,8 @@ function fmtTime(d: Date): string {
 export default function LogCatchScreen() {
   const router = useRouter();
   const { user, cachedUserId } = useAuth();
+  // Identité locale : suffit pour saisir une prise, même sans session valide
+  const knownUserId = user?.id ?? cachedUserId;
   const { settings, t, locale, fmtTemp } = useSettings();
   const insets = useSafeAreaInsets();
   const { activeSpecies } = useActiveSpecies();
@@ -380,15 +378,12 @@ export default function LogCatchScreen() {
     // 1) Charger la localisation + vitesse
     // 2) Faire du reverse geocoding pour le lac
     // 3) Récupérer la météo
-    // 4) Synchroniser les prises hors-ligne en attente
+    // (La synchronisation de la file est gérée par le moteur — lib/syncEngine.)
     let isMounted = true;
 
     const init = async () => {
-      // Sync hors-ligne et voyage actif en arrière-plan : ils ne doivent
-      // JAMAIS bloquer la capture GPS (le pêcheur a un poisson dans les mains).
-      if (user?.id) {
-        trySyncOfflineCatches(user.id).catch(() => {});
-      }
+      // Voyage actif : lecture locale instantanée, jamais de réseau — ne doit
+      // JAMAIS retarder la capture GPS (le pêcheur a un poisson dans les mains).
       loadActiveTrip()
         .then((trip) => { if (isMounted) setActiveTrip(trip); })
         .catch(() => {});
@@ -452,7 +447,7 @@ export default function LogCatchScreen() {
     return () => {
       isMounted = false;
     };
-  }, [user?.id]);
+  }, []);
 
   // Initialise l'espèce sélectionnée quand la liste active change
   useEffect(() => {
@@ -465,24 +460,18 @@ export default function LogCatchScreen() {
     });
   }, [activeSpecies, prefillSpecies]);
 
+  // Leurres : liste locale immédiate (disponible sans réseau), puis mise à jour
+  // si le serveur répond.
   useEffect(() => {
-    const loadPreferences = async () => {
-      if (!user?.id) return;
-      try {
-        const lures = await loadLuresWithCache(user.id);
-        setUserLures(lures);
-
-        if (prefillLure) {
-          const lureObj = lures.find((l) => l.name === prefillLure);
-          if (lureObj) setSelectedLure(lureObj);
-        }
-      } catch (error) {
-        console.warn('[LogCatch] Erreur chargement leurres', error);
+    if (!knownUserId) return;
+    return watchLures(knownUserId, (lures) => {
+      setUserLures(lures);
+      if (prefillLure) {
+        const lureObj = lures.find((l) => l.name === prefillLure);
+        if (lureObj) setSelectedLure((prev) => prev ?? lureObj);
       }
-    };
-
-    loadPreferences();
-  }, [user?.id]);
+    });
+  }, [knownUserId, prefillLure]);
 
   // Date et heure de la prise
   const [catchDateTime, setCatchDateTime] = useState<Date>(() => new Date());
@@ -497,8 +486,17 @@ export default function LogCatchScreen() {
 
 
   const handleOpenLocationPicker = () => {
-    const initial = effectiveCoords;
-    if (!initial) return;
+    // Sans position GPS (intérieur, démarrage à froid), on peut quand même
+    // placer la prise à la main : la carte s'ouvre sur la dernière prise connue.
+    let initial: { latitude: number; longitude: number } | null = effectiveCoords;
+    if (!initial) {
+      const last = getCatchStoreSnapshot().catches.find(
+        (c) => typeof c.latitude === 'number' && typeof c.longitude === 'number',
+      );
+      initial = last
+        ? { latitude: last.latitude as number, longitude: last.longitude as number }
+        : DEFAULT_MAP_CENTER;
+    }
     setPickerCoord({ latitude: initial.latitude, longitude: initial.longitude });
     setShowLocationPicker(true);
   };
@@ -630,26 +628,36 @@ export default function LogCatchScreen() {
     }
 
     if (!effectiveCoords) {
-      Alert.alert(t('log.locationTitle'), t('log.locationBody'));
+      Alert.alert(t('log.locationTitle'), t('log.locationBody'), [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('log.pickOnMap'), onPress: handleOpenLocationPicker },
+      ]);
       return;
     }
 
     const depthFeet =
       depthMeters.trim().length > 0 ? Number.parseFloat(depthMeters.replace(',', '.')) : null;
-    const depthValue = depthFeet != null ? depthFeet * 0.3048 : null; // converti pieds → mètres
+    const depthValue = depthFeet != null && Number.isFinite(depthFeet) ? depthFeet * 0.3048 : null; // pieds → mètres
     // Les champs poids/longueur sont saisis dans l'unité préférée de
     // l'utilisateur, mais toujours stockés en lb / pouces dans Supabase.
     const weightInput =
       weightLbs.trim().length > 0 ? Number.parseFloat(weightLbs.replace(',', '.')) : null;
-    const weightValue = weightInput != null ? storeWeight(weightInput, settings.weightUnit) : null;
+    const weightValue =
+      weightInput != null && Number.isFinite(weightInput) ? storeWeight(weightInput, settings.weightUnit) : null;
     const lengthInput =
       lengthInches.trim().length > 0 ? Number.parseFloat(lengthInches.replace(',', '.')) : null;
-    const lengthValue = lengthInput != null ? storeLength(lengthInput, settings.lengthUnit) : null;
+    const lengthValue =
+      lengthInput != null && Number.isFinite(lengthInput) ? storeLength(lengthInput, settings.lengthUnit) : null;
+    const speedParsed = speedInput.trim() ? Number.parseFloat(speedInput.replace(',', '.')) : speedKmh;
+    const speedValue = speedParsed != null && Number.isFinite(speedParsed) ? speedParsed : null;
 
     const sizeCategoryValue: SizeCategory | null =
       sizeMode === 'approx' ? sizeCategory : null;
 
     const payload: CatchPayload = {
+      // UUID créé ici, une fois pour toutes : c'est lui qui rend l'envoi au
+      // serveur rejouable sans créer de doublon.
+      id: generateUuid(),
       user_id: effectiveUserId,
       map_id: null, // TODO: brancher sur la carte sélectionnée (personnelle / partagée)
       trip_id: activeTrip?.id ?? null,
@@ -662,92 +670,50 @@ export default function LogCatchScreen() {
       depth_source: depthValue != null ? 'manual' : sonarDepthMeters != null ? 'sonar' : null,
       temperature_c: isSitePrometteur ? null : temperatureC,
       wind_speed_kmh: isSitePrometteur ? null : windSpeedKmh,
-      wind_direction_deg: isSitePrometteur ? null : windDirectionDeg,
-      speed_kmh: speedInput.trim() ? Number.parseFloat(speedInput.replace(',', '.')) : speedKmh,
+      // La colonne est INTEGER
+      wind_direction_deg: isSitePrometteur || windDirectionDeg == null ? null : Math.round(windDirectionDeg),
+      speed_kmh: speedValue,
       weather_conditions: isSitePrometteur ? null : weatherConditions,
       size_category: isSitePrometteur ? null : sizeCategoryValue,
       weight_lbs: isSitePrometteur ? null : (sizeMode === 'weight' ? weightValue : null),
       length_inches: isSitePrometteur ? null : (sizeMode === 'length' ? lengthValue : null),
       notes: notes.trim().length > 0 ? notes.trim() : null,
       caught_at: catchDateTime.toISOString(),
-      local_id: `local_${Date.now()}`,
+      local_id: null,
     };
 
     setSaving(true);
     try {
-      // Hors-ligne (ou session absente) → file d'attente directement, sans
-      // attendre un échec réseau qui peut prendre des minutes sur Android.
-      const online = await isOnline();
-      if (!online || !user?.id) {
-        const persistedMedia = await persistMediaForOffline(media);
-        await enqueueOfflineCatch({ payload, media: persistedMedia });
-        await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-        Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
-        navigateAfterSave();
-        return;
-      }
-
-      // En ligne : insert avec annulation réelle après 20 s (signal faible →
-      // la requête est abandonnée et la prise bascule en file hors-ligne).
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20000);
-      let insertedCatch: { id: string } | null = null;
-      let error: unknown = null;
-      try {
-        const res = await supabase
-          .from('catches')
-          .insert(buildCatchInsertPayload(payload))
-          .select('id')
-          .abortSignal(controller.signal)
-          .single();
-        insertedCatch = res.data;
-        error = res.error;
-      } catch (e) {
-        error = e;
-      } finally {
-        clearTimeout(timer);
-      }
-
-      if (error) {
-        console.warn(`[LogCatch] Erreur lors de l'enregistrement en ligne, on bascule hors-ligne`, error);
-        const persistedMedia = await persistMediaForOffline(media);
-        await enqueueOfflineCatch({ payload, media: persistedMedia });
-        await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-        Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
-        navigateAfterSave();
-        return;
-      }
-
-      // Upload des médias vers Supabase Storage
-      if (insertedCatch && media.length > 0) {
-        for (const item of media) {
-          try {
-            const { storagePath } = await uploadMediaFile(item.uri, effectiveUserId, insertedCatch.id, item.type);
-            await supabase.from('catch_media').insert({
-              catch_id: insertedCatch.id,
-              media_type: item.type,
-              storage_path: storagePath,
-              uploaded: true,
-            });
-          } catch (mediaErr) {
-            console.warn('[LogCatch] Erreur upload media', mediaErr);
-          }
-        }
-      }
-
-      await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-      Alert.alert(t('log.savedTitle'), t('log.savedBody'));
-      navigateAfterSave();
+      // ── Enregistrement LOCAL : c'est lui, la sauvegarde ──────────────────
+      // Un seul chemin, avec ou sans réseau : la prise (et ses médias) est
+      // écrite dans la file d'attente de l'appareil, puis le moteur de
+      // synchronisation l'envoie au serveur en arrière-plan. Le pêcheur
+      // n'attend jamais le réseau, et rien ne dépend de la qualité du signal.
+      const persistedMedia = isSitePrometteur ? [] : await persistMediaForOffline(media);
+      await enqueueCatch({ payload, media: persistedMedia });
     } catch (error) {
-      console.warn('[LogCatch] Erreur inattendue, stockage hors-ligne', error);
-      const persistedMedia = await persistMediaForOffline(media);
-      await enqueueOfflineCatch({ payload, media: persistedMedia });
-      await saveLastCatchSettings({ species: payload.species, lure: selectedLure?.name ?? undefined, sizeCategory: sizeCategoryValue ?? undefined });
-      Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
-      navigateAfterSave();
-    } finally {
+      // L'écriture locale a échoué (stockage plein…) : on le DIT, on ne ferme pas
+      // le formulaire — la saisie reste à l'écran pour un nouvel essai.
+      console.warn('[LogCatch] Enregistrement local impossible', error);
+      Alert.alert(t('common.error'), t('log.saveFailed'));
       setSaving(false);
+      return;
     }
+
+    saveLastCatchSettings({
+      species: payload.species,
+      lure: selectedLure?.name ?? undefined,
+      sizeCategory: sizeCategoryValue ?? undefined,
+    }).catch(() => undefined);
+
+    const online = await isOnline();
+    setSaving(false);
+    if (online && user?.id) {
+      Alert.alert(t('log.savedTitle'), t('log.savedBody'));
+    } else {
+      Alert.alert(t('log.offlineTitle'), t('log.offlineBody'));
+    }
+    navigateAfterSave();
   };
 
   return (
@@ -793,8 +759,12 @@ export default function LogCatchScreen() {
 
               <AutoFieldBadge
                 icon="📍"
-                value={hasLocation ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}` : t('log.gps')}
-                onPress={hasLocation ? handleOpenLocationPicker : undefined}
+                value={
+                  hasLocation
+                    ? `${effectiveCoords!.latitude.toFixed(4)}, ${effectiveCoords!.longitude.toFixed(4)}`
+                    : autoLoading ? t('log.gps') : t('log.pickOnMap')
+                }
+                onPress={hasLocation || !autoLoading ? handleOpenLocationPicker : undefined}
                 modified={!!manualLocation}
               />
 
@@ -974,14 +944,18 @@ export default function LogCatchScreen() {
             <LureFormModal
               visible={showLureForm}
               onSave={async (data) => {
-                if (!user?.id) return;
+                if (!knownUserId) return;
                 setShowLureForm(false);
-                const created = await createUserLure(user.id, data);
+                // Sans réseau, le leurre est créé localement et envoyé plus tard
+                const created = await createUserLure(knownUserId, data);
                 if (created) {
-                  const updated = [...userLures, created].sort((a, b) => a.name.localeCompare(b.name));
+                  const updated = [...userLures.filter((l) => l.id !== created.id), created]
+                    .sort((a, b) => a.name.localeCompare(b.name));
                   setUserLures(updated);
-                  await setCachedLures(user.id, updated);
+                  await setCachedLures(knownUserId, updated);
                   setSelectedLure(created);
+                } else {
+                  Alert.alert(t('common.error'), t('lures.createError'));
                 }
               }}
               onClose={() => setShowLureForm(false)}

@@ -1,13 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Platform } from 'react-native';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 
-import { supabase } from '@/lib/supabase';
+import { withTimeout } from '@/lib/net';
+import { clearStoredAuthSession, readStoredAuthUser, supabase } from '@/lib/supabase';
 
 const CACHED_USER_ID_KEY = '@pechelog_cached_user_id';
+const CACHED_USER_EMAIL_KEY = '@pechelog_cached_user_email';
 
 // Ferme le navigateur OAuth si l'app est rouverte depuis un redirect (web uniquement)
 WebBrowser.maybeCompleteAuthSession();
@@ -22,11 +24,32 @@ export const authLog = {
   error: (step: string, data?: unknown) => data !== undefined ? console.error(`[Auth ${ts()}] ✗ ${step}`, data) : console.error(`[Auth ${ts()}] ✗ ${step}`),
 };
 
+/**
+ * État de la session, du point de vue de l'utilisateur :
+ *  - loading   : lecture de l'identité locale en cours (quelques ms)
+ *  - active    : session valide — lecture/écriture serveur possibles
+ *  - restoring : utilisateur connu, jeton expiré pas encore rafraîchi (typique
+ *                hors-ligne). L'app est pleinement utilisable en local ; la
+ *                session reviendra d'elle-même avec le réseau.
+ *  - expired   : utilisateur connu mais session définitivement perdue (jeton
+ *                révoqué). L'app reste utilisable en local ; il faudra se
+ *                reconnecter pour synchroniser.
+ *  - signedOut : personne n'est connecté sur cet appareil → écran de login.
+ */
+export type SessionStatus = 'loading' | 'active' | 'restoring' | 'expired' | 'signedOut';
+
 type AuthContextType = {
   session: Session | null;
   user: User | null;
   initializing: boolean;
+  /**
+   * Dernier utilisateur connu sur cet appareil. Disponible SANS réseau et sans
+   * session valide : c'est lui qui donne accès aux données locales (cache, file
+   * d'attente). Effacé uniquement par une déconnexion explicite.
+   */
   cachedUserId: string | null;
+  cachedEmail: string | null;
+  sessionStatus: SessionStatus;
   signInWithGoogle: () => Promise<AuthError | null>;
   signInWithFacebook: () => Promise<AuthError | null>;
   signInWithApple: () => Promise<AuthError | null>;
@@ -185,16 +208,50 @@ async function openOAuth(provider: 'google' | 'facebook' | 'apple'): Promise<Aut
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [initializing, setInitializing] = useState(true);
   const [cachedUserId, setCachedUserId] = useState<string | null>(null);
+  const [cachedEmail, setCachedEmail] = useState<string | null>(null);
+  // L'identité locale (AsyncStorage) a été lue
+  const [localLoaded, setLocalLoaded] = useState(false);
+  // Supabase a émis INITIAL_SESSION (peut prendre jusqu'à ~1 min hors-ligne avec
+  // un jeton expiré : on ne l'attend QUE si aucun utilisateur n'est connu)
+  const [initialEventReceived, setInitialEventReceived] = useState(false);
+  // Une session (même expirée) est-elle encore persistée ? null = pas encore su
+  const [storedSessionExists, setStoredSessionExists] = useState<boolean | null>(null);
+  // Déconnexion explicite en cours : ignorer une session résiduelle qui
+  // reviendrait d'un rafraîchissement de jeton encore en vol.
+  const explicitSignOutRef = useRef(false);
 
+  // ── 1. Identité locale : lecture directe du stockage, AUCUN accès réseau ──
+  // C'est ce qui permet d'ouvrir l'app immédiatement hors-ligne. Ne pas la
+  // remplacer par supabase.auth.getSession() (voir readStoredAuthUser).
   useEffect(() => {
-    // Charger le dernier userId connu pour le mode hors-ligne
-    AsyncStorage.getItem(CACHED_USER_ID_KEY).then((id) => {
-      if (id) setCachedUserId(id);
-    });
+    let cancelled = false;
+    (async () => {
+      const [legacyId, legacyEmail, stored] = await Promise.all([
+        AsyncStorage.getItem(CACHED_USER_ID_KEY).catch(() => null),
+        AsyncStorage.getItem(CACHED_USER_EMAIL_KEY).catch(() => null),
+        readStoredAuthUser(),
+      ]);
+      if (cancelled) return;
+      const id = stored?.id ?? legacyId;
+      if (id) {
+        setCachedUserId((prev) => prev ?? id);
+        setCachedEmail((prev) => prev ?? stored?.email ?? legacyEmail ?? null);
+      }
+      setStoredSessionExists((prev) => prev ?? stored != null);
+      setLocalLoaded(true);
+      authLog.info('Identité locale lue', { knownUser: !!id, storedSession: stored != null });
+    })();
+    return () => { cancelled = true; };
   }, []);
 
+  // Filet de sécurité : si Supabase ne répond jamais, on ne reste pas bloqué
+  useEffect(() => {
+    const timer = setTimeout(() => setInitialEventReceived(true), 8000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // ── 2. Session Supabase : arrive (ou revient) en arrière-plan ──
   useEffect(() => {
     authLog.info('AuthProvider monté — abonnement onAuthStateChange');
 
@@ -203,18 +260,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
       authLog.info(`onAuthStateChange`, { event, userId: newSession?.user?.id ?? null });
 
+      if (explicitSignOutRef.current) {
+        if (event === 'SIGNED_IN' && newSession) {
+          explicitSignOutRef.current = false; // nouvelle connexion volontaire
+        } else if (newSession) {
+          authLog.warn('Session ignorée : déconnexion explicite en cours', { event });
+          return;
+        }
+      }
+
       setSession(newSession);
       setUser(newSession?.user ?? null);
 
-      // Persister l'userId pour accès hors-ligne aux données de cache
       if (newSession?.user?.id) {
-        setCachedUserId(newSession.user.id);
-        AsyncStorage.setItem(CACHED_USER_ID_KEY, newSession.user.id).catch(() => {});
+        // Mémoriser l'utilisateur pour l'accès hors-ligne aux données locales
+        const { id, email } = newSession.user;
+        setCachedUserId(id);
+        setCachedEmail(email ?? null);
+        setStoredSessionExists(true);
+        AsyncStorage.setItem(CACHED_USER_ID_KEY, id).catch(() => {});
+        if (email) AsyncStorage.setItem(CACHED_USER_EMAIL_KEY, email).catch(() => {});
+      } else if (event === 'INITIAL_SESSION' || event === 'SIGNED_OUT') {
+        // Pas de session : simplement pas rafraîchie (hors-ligne) ou réellement
+        // disparue (jeton révoqué) ? Le stockage tranche. Lecture directe : ne
+        // PAS appeler supabase.auth.* depuis ce callback (verrou interne).
+        readStoredAuthUser().then((stored) => setStoredSessionExists(stored != null));
       }
 
       if (event === 'INITIAL_SESSION') {
         authLog.info('INITIAL_SESSION reçu', { sessionExists: !!newSession });
-        setInitializing(false);
+        setInitialEventReceived(true);
       }
 
       if (event === 'SIGNED_IN') {
@@ -260,11 +335,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const signInWithGoogle = () => openOAuth('google');
-  const signInWithFacebook = () => openOAuth('facebook');
-  const signInWithApple = () => openOAuth('apple');
+  // Un utilisateur connu localement n'attend JAMAIS Supabase pour entrer dans
+  // l'app. Seul un appareil sans utilisateur connu attend INITIAL_SESSION (qui
+  // est alors immédiat : il n'y a aucun jeton à rafraîchir).
+  const initializing = !localLoaded || (!cachedUserId && !session && !initialEventReceived);
+
+  const sessionStatus: SessionStatus = initializing
+    ? 'loading'
+    : session
+      ? 'active'
+      : !cachedUserId
+        ? 'signedOut'
+        : storedSessionExists === false && initialEventReceived
+          ? 'expired'
+          : 'restoring';
+
+  const startSignIn = (provider: 'google' | 'facebook' | 'apple') => {
+    explicitSignOutRef.current = false;
+    return openOAuth(provider);
+  };
+  const signInWithGoogle = () => startSignIn('google');
+  const signInWithFacebook = () => startSignIn('facebook');
+  const signInWithApple = () => startSignIn('apple');
 
   const signInWithEmail = async (email: string, password: string): Promise<AuthError | null> => {
+    explicitSignOutRef.current = false;
     authLog.info('signInWithEmail — tentative', { email });
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
@@ -276,15 +371,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async (): Promise<AuthError | null> => {
-    authLog.info('signOut — déconnexion locale');
-    // scope:'local' garantit que la session locale est effacée même si le réseau échoue.
-    const { error } = await supabase.auth.signOut({ scope: 'local' });
+    authLog.info('signOut — déconnexion explicite');
+    explicitSignOutRef.current = true;
+
+    // Déconnexion EXPLICITE : c'est le seul cas où l'on oublie l'utilisateur
+    // local (les prises encore en file restent sur l'appareil et repartiront
+    // quand ce même compte se reconnectera).
+    setCachedUserId(null);
+    setCachedEmail(null);
+    setSession(null);
+    setUser(null);
+    setStoredSessionExists(false);
+    await AsyncStorage.multiRemove([CACHED_USER_ID_KEY, CACHED_USER_EMAIL_KEY]).catch(() => {});
+
+    // Même avec scope:'local', supabase-js tente d'abord un rafraîchissement du
+    // jeton puis un appel /logout : hors-ligne, cela peut durer ~30 s. On borne
+    // l'attente et on efface la session locale nous-mêmes dans tous les cas.
+    let error: AuthError | null = null;
+    try {
+      const res = await withTimeout(supabase.auth.signOut({ scope: 'local' }), 4000, 'signOut');
+      error = res.error ?? null;
+    } catch (e) {
+      authLog.warn('signOut distant non confirmé (hors-ligne ?) — session locale effacée', e);
+    }
+    await clearStoredAuthSession();
+
     if (error) {
       authLog.error('signOut échoué', { message: error.message });
     } else {
       authLog.info('signOut réussi');
     }
-    return error ?? null;
+    return error;
   };
 
   return (
@@ -293,6 +410,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       initializing,
       cachedUserId,
+      cachedEmail,
+      sessionStatus,
       signInWithGoogle,
       signInWithFacebook,
       signInWithApple,
