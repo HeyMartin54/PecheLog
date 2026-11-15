@@ -1,4 +1,5 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
+import { Platform } from 'react-native';
 
 // ─── Helpers réseau partagés ──────────────────────────────────────────────────
 // Sur Android, un fetch sans timeout peut bloquer plusieurs minutes avec un
@@ -17,6 +18,16 @@ import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 //                    rapportée par l'OS peut être fausse (réseau qui bloque la
 //                    sonde de Google) ou en retard de quelques secondes au
 //                    retour du signal — s'y fier bloquerait la synchronisation.
+
+// WEB uniquement. Dans les navigateurs qui exposent navigator.connection
+// (Chrome, Edge, Chrome Android), NetInfo n'écoute QUE l'événement « change »
+// de cette API et ignore les événements « online » / « offline » de la page :
+// un passage hors-ligne peut alors passer inaperçu. On les relaie nous-mêmes.
+if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  const relay = () => { NetInfo.refresh().catch(() => undefined); };
+  window.addEventListener('online', relay);
+  window.addEventListener('offline', relay);
+}
 
 /** Fenêtre pendant laquelle une réponse du serveur prouve que le réseau fonctionne. */
 const SERVER_CONTACT_TTL_MS = 2 * 60 * 1000;

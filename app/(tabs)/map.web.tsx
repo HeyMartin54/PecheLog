@@ -37,6 +37,7 @@ let Marker: any = null;
 let Popup: any = null;
 let useMap: any = null;
 let Polygon: any = null;
+let ZoomControl: any = null;
 
 if (typeof window !== 'undefined') {
   const RL = require('react-leaflet');
@@ -46,6 +47,7 @@ if (typeof window !== 'undefined') {
   Popup = RL.Popup;
   useMap = RL.useMap;
   Polygon = RL.Polygon;
+  ZoomControl = RL.ZoomControl;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -858,8 +860,10 @@ export default function MapScreen() {
       {/* Carte */}
       <div style={{ flex: 1, width: '100%', height: '100%' }}>
         {MapContainer && (
-          <MapContainer center={[47.5, -71.5]} zoom={6} style={{ width: '100%', height: '100%' }}>
+          <MapContainer center={[47.5, -71.5]} zoom={6} zoomControl={false} style={{ width: '100%', height: '100%' }}>
             <TileLayer url={satellite ? TILES.satellite.url : TILES.standard.url} attribution={satellite ? TILES.satellite.attribution : TILES.standard.attribution} />
+            {/* En bas à gauche : en haut, les boutons étaient cachés par la barre de filtres */}
+            {ZoomControl && <ZoomControl position="bottomleft" />}
             <MapController catches={visibleCatches} onBoundsChange={handleBoundsChange} mapRef={leafletMapRef} />
 
             {/* Polygone de la zone affichée */}
@@ -1171,7 +1175,7 @@ export default function MapScreen() {
       {/* Indicateur données locales */}
       {fromCache && (
         <div style={{
-          position: 'absolute', bottom: 64, left: 14, zIndex: 1000,
+          position: 'absolute', bottom: 86, left: 14, zIndex: 1000,
           display: 'flex', alignItems: 'center', gap: 5,
           background: 'rgba(6,20,37,0.92)', borderRadius: 20,
           border: '1px solid rgba(245,166,35,0.4)',

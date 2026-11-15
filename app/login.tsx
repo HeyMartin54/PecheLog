@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
@@ -23,6 +24,7 @@ export default function LoginScreen() {
   const { t } = useSettings();
   const isConnected = useNetworkStatus();
   const insets = useSafeAreaInsets();
+  const isFocused = useIsFocused();
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -31,7 +33,13 @@ export default function LoginScreen() {
   const DEV_PASSWORD = 'TestPeche2024!';
 
   useEffect(() => {
-    if (initializing) return;
+    // GARDE DE FOCUS — ne pas retirer. Cet écran est la route initiale de la
+    // pile : il reste monté SOUS les onglets pendant toute l'utilisation de
+    // l'app. Sans cette garde, chaque rafraîchissement du jeton (toutes les
+    // heures, et à chaque retour du réseau) relançait la redirection ci-dessous
+    // et remplaçait l'écran alors ouvert — un formulaire de prise en cours de
+    // saisie disparaissait, par exemple.
+    if (!isFocused || initializing) return;
     if (session) {
       router.replace('/(tabs)');
       return;
@@ -43,7 +51,7 @@ export default function LoginScreen() {
     if (sessionStatus === 'restoring') {
       router.replace('/(tabs)');
     }
-  }, [initializing, session, sessionStatus]);
+  }, [isFocused, initializing, session, sessionStatus]);
 
   const handleGoogleLogin = async () => {
     if (loading) return;

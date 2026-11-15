@@ -190,7 +190,7 @@ export default function SettingsScreen() {
             {sessionStatus === 'expired' && (
               <TouchableOpacity
                 style={styles.reconnectBtn}
-                onPress={() => router.push('/login')}
+                onPress={() => router.replace('/login')}
                 activeOpacity={0.85}
               >
                 <Text style={styles.reconnectBtnText}>{t('sync.reconnect')}</Text>

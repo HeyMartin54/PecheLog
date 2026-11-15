@@ -31,7 +31,7 @@ export default function SyncStatusBanner() {
       {expired && (
         <TouchableOpacity
           style={[styles.banner, styles.bannerWarning]}
-          onPress={() => router.push('/login')}
+          onPress={() => router.replace('/login')}
           activeOpacity={0.85}
           accessibilityRole="button"
         >
