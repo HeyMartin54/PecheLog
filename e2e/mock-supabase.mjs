@@ -33,9 +33,12 @@ function freshState() {
       down: false, // coupe la connexion sans répondre (réseau mort)
       hang: false, // ne répond jamais (signal faible)
       latencyMs: 0,
-      dropAfterInsert: 0, // N prochaines insertions de prises : écrit, puis coupe sans répondre
+      // Réponse perdue : la prochaine prise insérée EST écrite, mais sa réponse et
+      // celle des (N-1) tentatives suivantes pour la même prise n'arrivent jamais.
+      dropAfterInsert: 0,
       refreshMode: 'ok', // 'ok' | 'invalid' (jeton révoqué)
     },
+    dropsLeft: {}, // id de prise → réponses encore à perdre
   };
 }
 let state = freshState();
@@ -182,6 +185,11 @@ async function handleRest(req, res, url, auth) {
       }
       const index = rows.findIndex((r) => r.id === row.id);
       if (index !== -1) {
+        if (table === 'catches' && state.dropsLeft[row.id] > 0) {
+          state.dropsLeft[row.id] -= 1;
+          state.log.push({ note: 'réponse perdue (nouvelle tentative)', id: row.id });
+          return req.socket.destroy();
+        }
         if (!upsert) {
           return send(res, 409, pgError('23505', `duplicate key value violates unique constraint "${table}_pkey"`));
         }
@@ -194,8 +202,10 @@ async function handleRest(req, res, url, auth) {
     }
     // Panne injectée : la ligne EST écrite, mais la réponse n'arrive jamais
     if (table === 'catches' && state.config.dropAfterInsert > 0) {
-      state.config.dropAfterInsert -= 1;
-      state.log.push({ note: 'réponse perdue après insertion', ids: written.map((w) => w.id) });
+      const extra = state.config.dropAfterInsert - 1;
+      state.config.dropAfterInsert = 0;
+      written.forEach((w) => { state.dropsLeft[w.id] = extra; });
+      state.log.push({ note: 'réponse perdue après insertion', id: written[0]?.id });
       return req.socket.destroy();
     }
     if (!prefer.includes('return=representation')) return send(res, 201, undefined);

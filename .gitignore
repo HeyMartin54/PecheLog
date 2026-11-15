@@ -40,3 +40,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# captures du scénario navigateur
+e2e/shots/

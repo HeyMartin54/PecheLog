@@ -407,18 +407,30 @@ await step('hors-ligne : la prise est gardée ; en ligne : elle part aussitôt',
 });
 
 console.log('\n8. Réponse du serveur perdue en route');
-await step('la prise n\'est insérée qu\'une fois malgré le renvoi', async () => {
+await step('la même insertion rejouée plusieurs fois ne crée qu\'une prise', async () => {
   await until(async () => !(await hasText('en attente de synchronisation')), { timeout: 10_000, what: 'file vide avant le test' });
-  await control('config', { dropAfterInsert: 1 });
+  // Le serveur écrit la ligne, puis perd sa réponse — deux fois de suite.
+  // L'insertion est donc REJOUÉE (par la pile réseau du navigateur, comme le
+  // fait OkHttp sur Android, ou par l'app à son essai suivant). Avec un
+  // identifiant attribué par le serveur, chaque rejeu créait une prise de plus.
+  await control('config', { dropAfterInsert: 2 });
   await logCatch();
-  // Le serveur a écrit la ligne, mais l'app n'a reçu aucune réponse
   await until(async () => (await serverCatches()).length === 7, { timeout: 8000, what: 'ligne écrite côté serveur' });
-  await waitText('1 prise en attente de synchronisation', 8000);
-  // Nouvel essai automatique → le serveur répond « déjà présent » → succès
-  await until(async () => !(await hasText('en attente de synchronisation')), { timeout: 40_000, interval: 500, what: 'nouvel essai réussi' });
-  const rows = await serverCatches();
+  await until(async () => !(await hasText('en attente de synchronisation')), { timeout: 80_000, interval: 500, what: 'prise confirmée' });
+
+  const { tables, log } = await serverState();
+  const rows = tables.catches;
+  const lost = log.filter((l) => l.note).length;
+  check(lost === 2, `la panne n'a pas été injectée comme prévu (${lost})`);
   check(rows.length === 7, `${rows.length} prises au lieu de 7 (doublon)`);
   check(new Set(rows.map((r) => r.id)).size === 7, 'identifiants en double');
+
+  // …et l'app la considère bien comme envoyée (ni en attente, ni refusée)
+  await openTab('Réglages');
+  await until(async () => (await page.getByTestId('pending-count').innerText()) === '0', { what: 'compteur à 0' });
+  check(!(await hasText('refusé')), 'la prise est signalée comme refusée par le serveur');
+  await openTab('Accueil');
+  return `${lost} réponses perdues, insertion rejouée, 1 seule ligne`;
 });
 
 console.log('\n9. Protection du cache');

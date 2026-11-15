@@ -79,11 +79,13 @@ Le pêcheur est sur l'eau, potentiellement en train de gérer un poisson. La sai
 | Carte destination | Radio : personnelle / partagée / publique | ❌ (UI absente) |
 | Notes | Textarea | ✅ |
 
-### Comportement hors-ligne
-- Si hors-ligne (vérifié AVANT l'insert) ou si l'insert Supabase échoue → catch mis en file `offline_catches_queue_v1` (AsyncStorage)
-- Sync automatique déclenchée quand connexion rétablie (`SyncManager` dans `app/_layout.tsx`)
-- Les photos/médias **sont inclus** dans la file offline (copiés localement via `persistMediaForOffline`, uploadés à la sync) ✅
-- La météo manquante est récupérée rétroactivement (Open-Meteo historique) lors de la sync ✅
+### Enregistrement : local d'abord (un seul chemin, avec ou sans réseau)
+- Toute prise est d'abord écrite dans la file locale via `enqueueCatch()` (clé `offline_catches_queue_v1`), puis envoyée à Supabase en arrière-plan par le moteur de synchronisation. **Aucun écran ne fait d'insert direct.**
+- L'`id` de la prise est un UUID créé sur l'appareil (`lib/uuid.ts`) : un envoi rejoué ne peut pas créer de doublon.
+- Si l'écriture locale échoue, une erreur est affichée et le formulaire reste ouvert (jamais de faux « enregistré »).
+- Les photos/médias sont copiés localement (`persistMediaForOffline`) et envoyés par la synchronisation ; un envoi en échec est réessayé ✅
+- La météo manquante est complétée après l'envoi (Open-Meteo historique) ✅
+- Sans position GPS, la prise peut être placée à la main sur la carte.
 
 ### Préconfiguration depuis Voyage
 - Le dernier espèce/leurre utilisé est sauvegardé via `saveLastCatchSettings()` dans `tripStorage.ts`
@@ -104,8 +106,9 @@ Le pêcheur est sur l'eau, potentiellement en train de gérer un poisson. La sai
 - **Recherche de lac** — cherche parmi les lacs des prises de l'utilisateur (fonctionne hors-ligne) et centre la carte sur le lac choisi ✅
 - **Toggle satellite** / carte standard
 - **Callout au clic** sur un marqueur → affiche espèce, leurre, poids, date
-- **Région calculée dynamiquement** pour englober tous les pins
-- Données chargées depuis Supabase ou cache si hors-ligne
+- **Cadrage initial** sur l'ensemble des prises, une seule fois ; ensuite la caméra appartient à l'utilisateur (bouton « tout voir » pour recadrer)
+- Données lues dans le magasin local (`useCatches()`) : marqueurs affichés immédiatement, **y compris les prises pas encore synchronisées** ; la mise à jour serveur se fait en arrière-plan sans bloquer la carte
+- Web : feuille de style Leaflet embarquée dans le bundle (aucun CDN)
 
 ### Fonctionnalités prévues mais non implémentées ❌
 - Couche bathymétrique (GeoJSON du MELCC — nécessite des données externes)
@@ -136,7 +139,8 @@ Module de planification et suivi de sorties de pêche. Permet d'organiser une so
 - `lib/tripStorage.ts` — AsyncStorage (cache local) + **sync Supabase** (table `trips`) ✅
 - Types : `Trip`, `TripLake`, `LastCatchSettings`
 - Fonctions : `saveActiveTrip`, `loadActiveTrip`, `endActiveTrip`, `loadTripHistory`, `deleteTripFromHistory`, `syncLocalTripsToSupabase`, `savePrefillTrip`, `loadPrefillTrip`, `addFrequentCompanions`, `loadFrequentCompanions`
-- Offline-first : créés/terminés hors-ligne dans AsyncStorage, poussés vers Supabase au retour du signal (voir pièges dans la mémoire projet)
+- Local d'abord : `loadActiveTrip()` / `loadTripHistory()` lisent AsyncStorage et ne font **jamais** de requête réseau. Toute modification est écrite localement, marquée « à pousser », puis envoyée en arrière-plan.
+- `refreshTripsFromServer()` pousse d'abord les changements locaux, puis récupère ceux d'un autre appareil (un voyage terminé hors-ligne ne « ressuscite » pas).
 
 ---
 
@@ -248,54 +252,73 @@ Connecter l'app à un sonar de pêche portable via Bluetooth pour obtenir :
 
 ---
 
-## 📴 Mode hors-ligne ⚠️ PARTIEL
+## 📴 Mode hors-ligne ✅ « LOCAL D'ABORD »
 
 ### Principe
 L'app doit fonctionner **à 100%** sans connexion internet. C'est non-négociable pour la pêche en régions éloignées.
 
-### Architecture actuelle (implémentée)
+Le cas à ne jamais oublier est le **signal faible** : le téléphone se dit connecté, mais rien ne passe. L'app ne décide donc jamais « en ligne ou hors-ligne » pour choisir d'où lire : **elle lit toujours localement**, et parle au serveur en arrière-plan.
 
-#### 1. Détection de connexion ✅
-- `lib/hooks/useNetworkStatus.ts` via `@react-native-community/netinfo`
-- Retourne `boolean | null` (true = en ligne, false = hors-ligne, null = inconnu)
-- `ConnectionBadge.tsx` affiche le statut en temps réel
-- `SyncManager` dans `app/_layout.tsx` déclenche la sync quand connexion rétablie
+```
+écran ──lit───▶ lib/catchStore.ts ──▶ cache serveur (AsyncStorage) + file d'attente
+écran ──écrit─▶ lib/offlineQueue.ts (file, verrou) ──▶ lib/offlineSync.ts ──▶ Supabase
+                                          ▲
+                               lib/syncEngine.ts (QUAND synchroniser)
+```
 
-#### 2. Cache de données ✅
-- `lib/catchCache.ts` — sauvegarde les prises Supabase dans AsyncStorage
-- Clé : `catches_cache_{userId}_v1`
-- Utilisé comme fallback sur l'accueil, la carte et les stats
+### Règles (à respecter dans tout nouveau code)
+1. **Lire les prises** : `useCatches()` (`lib/hooks/useCatches.ts`). Ne jamais interroger `catches` depuis un écran.
+2. **Enregistrer une prise** : `enqueueCatch()`. Ne jamais faire d'insert direct depuis un écran.
+3. **Qui est l'utilisateur hors-ligne** : `useAuth().cachedUserId`. Ne pas appeler `supabase.auth.getSession()` pour cela : avec un jeton expiré elle tente un rafraîchissement réseau (~30 s de réessais).
+4. **Tout appel réseau a un timeout.** Les appels Supabase l'ont d'office (`supabaseFetch`) ; les autres passent par `fetchWithTimeout` / `withTimeout` de `lib/net.ts`.
+5. **Aucun indicateur de chargement ne doit dépendre du réseau** : afficher les données locales, rafraîchir ensuite.
+6. La garde `isFocused` de `app/login.tsx` ne doit pas être retirée (voir « Pièges »).
 
-#### 3. File d'attente de prises ✅
-- `lib/offlineSync.ts`
-- `enqueueOfflineCatch()` — met en file si hors-ligne ou si insert Supabase échoue
-- `trySyncOfflineCatches()` — tente l'envoi quand connexion rétablie (verrou anti-doublons)
-- `persistMediaForOffline()` — copie les médias dans `offline_media/` pour upload différé ✅
-- Enrichissement météo rétroactif (Open-Meteo) pour les prises capturées hors-ligne ✅
-- Clé AsyncStorage : `offline_catches_queue_v1`
+### Modules
 
-#### 4. Voyages ✅
-- `lib/tripStorage.ts` — AsyncStorage, fonctionne 100% hors-ligne
+| Fichier | Rôle |
+|---------|------|
+| `lib/net.ts` | `isOnline()` = internet utilisable (enrichissements facultatifs) ; `mayReachNetwork()` = un réseau existe (la synchro tente quand même) ; `withTimeout`, `fetchWithTimeout`, `isNetworkError` |
+| `lib/supabase.ts` | `supabaseFetch` : timeout sur chaque requête + refus local des requêtes de données sans session ; `readStoredAuthUser()` (identité locale, sans réseau) |
+| `lib/uuid.ts` | UUID créé sur l'appareil = clé primaire de la prise |
+| `lib/offlineQueue.ts` | File d'attente : chaque modification relit et réécrit sous verrou ; migration de l'ancien format ; médias locaux |
+| `lib/offlineSync.ts` | Un passage de synchro : prise → médias → météo. Erreur réseau = arrêt, on réessaiera. Refus du serveur = élément « bloqué », conservé et visible dans Réglages |
+| `lib/syncEngine.ts` | Déclencheurs : changement réseau, retour au premier plan, ajout à la file, session disponible, réessais 15 s → 5 min |
+| `lib/catchStore.ts` | Source unique des prises (cache serveur + file d'attente), rafraîchie en arrière-plan |
+| `lib/catchCache.ts` | Cache AsyncStorage des prises (`catches_cache_{userId}`) |
+| `lib/tripStorage.ts`, `lib/lureStorage.ts` | Voyages et leurres : lecture locale, envoi différé |
 
-### Architecture prévue mais non implémentée ❌
+### Authentification et hors-ligne
+`useAuth().sessionStatus` :
+- `active` — session valide
+- `restoring` — utilisateur connu, jeton expiré pas encore rafraîchi (typique hors-ligne) : l'app est pleinement utilisable en local
+- `expired` — session définitivement perdue : l'app reste utilisable en local, un bandeau invite à se reconnecter
+- `signedOut` — personne de connu sur l'appareil → écran de login
 
-#### WatermelonDB (remplacé temporairement par AsyncStorage)
-- `@nozbe/watermelondb` est installé dans `package.json` mais **jamais instancié**
-- La base SQLite locale n'est pas configurée
-- La sync bidirectionnelle complète (pull Supabase → local) n'est pas faite
-- À implémenter pour remplacer le cache AsyncStorage actuel
+`cachedUserId` n'est effacé que par une déconnexion explicite.
 
-#### Cartes hors-ligne
-- MapBox Offline Packs → non applicable (on utilise react-native-maps)
-- Alternative à étudier : tuiles OpenStreetMap téléchargées localement
+### Pièges connus
+- **L'écran de login reste monté sous les onglets** (route initiale de la pile). Une redirection sans garde `isFocused` s'y exécutait à chaque rafraîchissement du jeton et fermait l'écran ouvert (formulaire de prise en cours).
+- **Requête sans jeton valide** : le RLS répond « 0 ligne » sans erreur. `supabaseFetch` refuse ces requêtes ; sinon la liste vide écraserait le cache.
+- **Joignabilité rapportée par l'OS** : fausse quelques secondes au retour du réseau. La synchro se base sur la présence d'un réseau, pas sur ce drapeau.
+- **Blob + FormData** : inutilisable sur React Native. L'envoi de fichiers passe par `expo-file-system` (`lib/uploadMedia.ts`).
 
-#### Météo précachée
-- Pas de précachage de prévisions avant une sortie
-- Actuellement : si hors-ligne, pas de données météo dans le formulaire
+### Tests
+- `npm test` — tests Jest de la file, de la synchronisation, du moteur, du magasin, des voyages, des leurres et du client Supabase (`__tests__/`).
+- `e2e/` — scénario navigateur contre un faux serveur Supabase : en ligne → serveur injoignable → redémarrage → retour du réseau (voir l'en-tête de `e2e/offline-scenario.mjs`).
 
-### Indicateurs UI actuels
-- `ConnectionBadge` affiché dans les écrans (pas de bannière orange comme prévu)
-- Compteur de prises en attente affiché dans Réglages > Synchronisation, avec bouton « Synchroniser maintenant » ✅
+### Non implémenté ❌
+- **Fond de carte hors-ligne** : les marqueurs s'affichent toujours, mais les tuiles dépendent de ce que Google/Apple Maps a gardé en mémoire. Une vraie carte hors-ligne demande un fournisseur de tuiles (les conditions d'OpenStreetMap interdisent le téléchargement en masse).
+- **Modifier / supprimer / dupliquer une prise déjà synchronisée** exige le réseau (lecture seule hors-ligne). Une prise en attente peut être supprimée.
+- **Web** : pas de service worker (la page ne se recharge pas sans réseau).
+- **WatermelonDB** : installé mais non utilisé ; AsyncStorage couvre les besoins actuels.
+- **Météo précachée** avant une sortie.
+
+### Indicateurs UI
+- `ConnectionBadge` : « En ligne » seulement si internet est réellement utilisable
+- `SyncStatusBanner` (accueil) : prises en attente (appui = synchroniser) et session expirée
+- Badge « En attente » sur les prises non synchronisées (accueil, carte, détail)
+- Réglages > Synchronisation : compteurs, résultat réel du dernier envoi, éléments refusés ✅
 
 ---
 
@@ -308,7 +331,7 @@ L'app doit fonctionner **à 100%** sans connexion internet. C'est non-négociabl
 - **Unités** : °C/°F, lb/kg, po/cm fonctionnelles sur tous les écrans (accueil, stats, carte, formulaire, détail) ✅
   - Stockage canonique inchangé (°C, lb, pouces) — conversion à l'affichage ET à la saisie via `lib/settingsStorage.ts`
   - Sync best-effort vers `profiles.units_*` ; pull au premier lancement sur un nouvel appareil
-- **Synchronisation** : compteur de prises en attente + bouton « Synchroniser maintenant » ✅
+- **Synchronisation** : prises et médias en attente (mis à jour en direct), bouton « Synchroniser maintenant » avec le résultat réel, éléments refusés par le serveur, avertissement avant déconnexion s'il reste des prises non envoyées ✅
 - **Équipement** : Mes leurres (`my-lures.tsx`) + Espèces & marqueurs (`my-species.tsx`, couleurs custom) ✅
 - **Déconnexion** : bouton fonctionnel ✅
 
@@ -368,12 +391,13 @@ PecheLog/
 │   ├── login.tsx              # ✅ Écran de login OAuth
 │   ├── modal.tsx              # Route modale générique
 │   ├── auth/callback.tsx      # ✅ Callback OAuth (web)
-│   └── _layout.tsx            # ✅ Layout + AuthProvider + SettingsProvider + SyncManager
+│   └── _layout.tsx            # ✅ Layout + AuthProvider + SettingsProvider + SyncManager (branche le moteur de synchro)
 ├── components/
 │   ├── LurePicker.tsx         # ✅ Sélecteur de leurre modal
 │   ├── LureFormModal.tsx      # ✅ Création/édition de leurre (photo incluse)
 │   ├── SpeciesDetailModal.tsx # ✅ Création/édition d'espèce custom
 │   ├── ConnectionBadge.tsx    # ✅ Badge statut réseau
+│   ├── SyncStatusBanner.tsx   # ✅ Bandeau prises en attente / session expirée
 │   ├── LocationPickerMap.tsx  # ✅ Carte pour choisir un point GPS (+ .web.tsx)
 │   ├── StaticMapView.tsx      # ✅ Carte en lecture seule (+ .web.tsx)
 │   ├── Themed.tsx / StyledText.tsx / ExternalLink.tsx
@@ -387,16 +411,21 @@ PecheLog/
 │   ├── species.ts             # ✅ Catalogue 11 espèces
 │   ├── lures.ts               # ✅ Catalogue ~80 leurres
 │   ├── lureStorage.ts         # ✅ Leurres personnels (Supabase + cache)
-│   ├── net.ts                 # ✅ fetchWithTimeout / isOnline / withTimeout (OBLIGATOIRES)
+│   ├── net.ts                 # ✅ fetchWithTimeout / isOnline / mayReachNetwork / withTimeout (OBLIGATOIRES)
 │   ├── locationSafe.ts        # ✅ getPositionSafe (OBLIGATOIRE, jamais getCurrentPositionAsync brut)
-│   ├── offlineSync.ts         # ✅ File d'attente offline (médias + météo rétroactive)
+│   ├── uuid.ts                # ✅ UUID créé sur l'appareil (clé primaire des prises)
+│   ├── offlineQueue.ts        # ✅ File d'attente des prises (verrou, médias locaux)
+│   ├── offlineSync.ts         # ✅ Envoi de la file vers Supabase (idempotent)
+│   ├── syncEngine.ts          # ✅ Déclenchement de la synchronisation
+│   ├── catchStore.ts          # ✅ Magasin local des prises (source unique des écrans)
 │   ├── catchCache.ts          # ✅ Cache AsyncStorage des prises
-│   ├── tripStorage.ts         # ✅ Persistance voyages (AsyncStorage + Supabase)
-│   ├── uploadMedia.ts / uploadLureMedia.ts  # ✅ Upload Supabase Storage
+│   ├── tripStorage.ts         # ✅ Voyages : lecture locale, envoi différé
+│   ├── uploadMedia.ts / uploadLureMedia.ts  # ✅ Envoi vers Supabase Storage (natif en flux)
 │   ├── hooks/
 │   │   ├── useLocation.ts     # ✅ GPS + reverse geocoding Nominatim
 │   │   ├── useWeather.ts      # ✅ OpenWeatherMap (EXPO_PUBLIC_OPENWEATHER_API_KEY)
-│   │   ├── useNetworkStatus.ts# ✅ NetInfo
+│   │   ├── useNetworkStatus.ts# ✅ NetInfo (« en ligne » = internet utilisable)
+│   │   ├── useCatches.ts      # ✅ Prises de l'utilisateur (magasin local) — À UTILISER dans les écrans
 │   │   ├── useSpeciesColors.ts# ✅ Couleurs custom espèces
 │   │   ├── useActiveSpecies.ts# ✅ Espèces actives de l'utilisateur
 │   │   └── useCustomSpecies.ts# ✅ Espèces personnalisées
@@ -405,6 +434,8 @@ PecheLog/
 │   ├── AuthContext.tsx        # ✅ Auth globale avec useAuth()
 │   └── SettingsContext.tsx    # ✅ useSettings() — langue, unités, t(), fmt* (NOUVEAU)
 ├── assets/                    # Images, fonts
+├── __tests__/                 # ✅ Tests Jest (npm test)
+├── e2e/                       # ✅ Scénario navigateur + faux serveur Supabase
 ├── CLAUDE.md                  # Ce fichier
 ├── DATABASE.md                # Schéma SQL complet
 └── prototype/
@@ -426,6 +457,7 @@ PecheLog/
 | @react-native-async-storage/async-storage | — | Persistance locale |
 | @react-native-community/netinfo | — | Détection réseau |
 | @nozbe/watermelondb | 0.28.0 | **Installé mais non utilisé** |
+| jest / jest-expo (dev) | 29 / 54 | Tests (`npm test`) |
 | expo-location | — | GPS |
 | expo-image-picker | — | Photos/vidéos |
 | expo-camera | — | Caméra |
@@ -467,7 +499,11 @@ units_temp (C|F), units_weight (lb|kg), units_length (in|cm)
 |----------|------------|-------|
 | `EXPO_PUBLIC_OPENWEATHER_API_KEY` | Oui | `useWeather.ts` |
 
-> **Note**: Les credentials Supabase (URL + anon key) sont hardcodés dans `lib/supabase.ts`. À migrer vers des variables d'environnement pour la production.
+| `EXPO_PUBLIC_GOOGLE_MAPS_KEY` | Oui (Android) | Carte native (`app.config.js`) |
+| `EXPO_PUBLIC_SUPABASE_URL` | Non | Remplace l'URL Supabase par défaut (tests, autre projet) |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Non | Remplace la clé publique par défaut |
+
+> **Note**: Les valeurs Supabase par défaut (URL + clé publique) sont dans `lib/supabase.ts` ; les deux variables ci-dessus permettent de les remplacer sans toucher au code.
 
 ---
 
@@ -481,8 +517,8 @@ units_temp (C|F), units_weight (lb|kg), units_length (in|cm)
 5. Carte interactive : filtres, clustering, recherche de lac (natif + web)
 6. Statistiques complètes (7 vues de données, filtres, records)
 7. Voyages de pêche (planification + prise rapide + historique + sync Supabase)
-8. Mode hors-ligne (cache + file d'attente + médias + météo rétroactive)
-9. Synchronisation automatique au retour du signal + sync manuelle dans Réglages
+8. Mode hors-ligne « local d'abord » : magasin local des prises, file d'attente protégée, médias, météo rétroactive
+9. Synchronisation idempotente, relancée au retour du signal, au premier plan et par réessais + sync manuelle dans Réglages
 10. Réglages fonctionnels : langue FR/EN (i18n complet), unités °C/°F lb/kg po/cm
 11. Central `lib/types.ts` (types partagés consolidés)
 12. Gestion leurres personnels + espèces custom (couleurs, actives/inactives)
@@ -493,6 +529,6 @@ units_temp (C|F), units_weight (lb|kg), units_length (in|cm)
 ### ❌ Pas encore commencé (et pourquoi)
 14. Sonar Bluetooth (Deeper PRO+) — nécessite `react-native-ble-plx` (non installé), un dev build EAS et le matériel pour tester
 15. Couche bathymétrique (MELCC) — nécessite les données GeoJSON externes
-16. Cartes hors-ligne (tuiles téléchargées) — non supporté nativement par react-native-maps
+16. Fond de carte hors-ligne (tuiles téléchargées) — demande un fournisseur de tuiles et des essais sur appareil
 17. WatermelonDB — installé mais non activé ; le cache AsyncStorage couvre les besoins actuels
 18. Publication EAS + soumission stores

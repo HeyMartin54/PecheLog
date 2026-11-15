@@ -65,37 +65,29 @@ Règles à respecter dans tout nouveau code :
 
 | Vérification | État |
 |---|---|
-| `npx tsc --noEmit` | OK au commit `594f3b6` (seule erreur : `components/ExternalLink.tsx`, antérieure). **À relancer** : `lib/net.ts` a été modifié depuis |
-| `npm test` (Jest, 9 fichiers dans `__tests__/`) | 118 tests réussis au commit `594f3b6`. **À relancer** |
-| Scénario navigateur `e2e/offline-scenario.mjs` | Dernier passage : **17 / 25**. Voir ci-dessous |
+| `npx tsc --noEmit` | OK (seule erreur : `components/ExternalLink.tsx`, antérieure au chantier — les types de routes ne sont pas générés hors d'un `expo start`) |
+| `npm test` (Jest, 9 fichiers dans `__tests__/`) | **118 tests réussis** |
+| Scénario navigateur `e2e/offline-scenario.mjs` | **25 vérifications sur 25**, aucune erreur JavaScript dans la page |
+| Bundle Android (`npx expo export -p android`) | OK : le code mobile se compile (ne prouve pas son comportement à l'exécution) |
 | Appareil Android / iOS réel | **Jamais testé.** Aucun émulateur dans l'environnement de travail |
 
-### Scénario navigateur — ce qui passe
+### Ce que le scénario navigateur prouve
 
-Accueil et carte en ligne ; feuille de style de la carte embarquée ; la carte n'est plus
-recréée au changement d'onglet ; prise enregistrée et envoyée une seule fois ;
-**le rafraîchissement du jeton ne ferme plus le formulaire** ; enregistrement en ~30 ms
-serveur injoignable ; prise en attente visible à l'accueil, sur la carte et dans Réglages ;
-carte, voyage et détail d'une prise utilisables serveur injoignable ; **session restaurée et
-prise envoyée 8 s après le retour du serveur, sans doublon** ; aucune requête de données
-partie sans session.
+L'app réelle (export web) tourne contre un faux serveur Supabase (`e2e/mock-supabase.mjs`)
+qui applique les mêmes règles que le vrai (chacun ses lignes, clé primaire unique) et
+permet d'injecter des pannes.
 
-### Scénario navigateur — les 8 échecs du dernier passage
+| Exigence | Vérifié |
+|---|---|
+| Se charge hors-ligne | Serveur injoignable **et** jeton expiré : données affichées en ~350 ms, pas de renvoi vers le login, aucun indicateur de chargement bloqué. Jeton révoqué : l'app reste utilisable et invite à se reconnecter |
+| Carte et marqueurs | Un marqueur par prise ; les prises non envoyées y figurent ; la carte n'est plus recréée ni recadrée au changement d'onglet ; feuille de style embarquée (aucun CDN) |
+| Enregistrer une prise | ~30 ms, serveur joignable ou non ; visible aussitôt à l'accueil (« En attente »), sur la carte et dans Réglages ; son détail s'ouvre |
+| Synchronisation au retour | Serveur de retour sans aucun signal du navigateur : envoyée en 3 s. Mode avion levé : 0,5 s. Insertion rejouée après deux réponses perdues : une seule ligne. Aucun doublon |
+| Divers | Un rafraîchissement du jeton ne ferme plus le formulaire en cours ; aucune requête de données n'est partie sans session |
 
-Aucun n'a été attribué à un défaut de l'app côté mobile ; ils restent à confirmer :
-
-1. Étape 5 (démarrage à froid) : le script rechargeait la page sur l'onglet Réglages et
-   comptait des indicateurs cachés. Script corrigé (`page.goto('/')`, indicateurs visibles
-   seulement) — **non relancé**.
-2. Étape 7 (mode avion) : sur web, le badge restait « En ligne ». Cause : dans Chrome,
-   NetInfo n'écoute que `navigator.connection` et ignore les événements `online`/`offline`.
-   Correctif ajouté dans `lib/net.ts` (relais de ces événements vers `NetInfo.refresh()`,
-   web uniquement) — **ni compilé ni relancé**.
-3. Étapes 8, 10, 11 : échecs en cascade de l'étape 7 (le navigateur restait hors-ligne).
-
-La dernière commande (modification de `lib/net.ts` et du script) a été interrompue en cours :
-vérifier que `e2e/offline-scenario.mjs` contient bien `page.goto(\`${APP}/\`)` à l'étape 5
-et le bloc `try / finally` autour de `setOffline` à l'étape 7 ; sinon, les refaire.
+Limite de cette preuve : c'est la version **web**. Elle partage toute la logique (file,
+synchro, magasin, authentification, écrans) avec le mobile, mais pas la carte native
+(`react-native-maps`), ni l'envoi natif des photos, ni la détection réseau d'Android.
 
 ### Relancer le scénario navigateur
 
@@ -112,18 +104,18 @@ node e2e/static-server.mjs /tmp/dist-e2e 8081
 node e2e/offline-scenario.mjs
 ```
 Playwright n'est pas une dépendance du projet (chargé par `require`, installation globale).
+Les captures d'écran vont dans `e2e/shots/` (ignoré par git).
 
 ## Reste à faire
 
-1. Relancer `npx tsc --noEmit` et `npm test`.
-2. Reconstruire l'export web, relancer le scénario, traiter ce qui échoue encore.
-3. **Mettre à jour `CLAUDE.md`** : il décrit encore l'ancienne architecture (sections
-   « Mode hors-ligne », « Architecture des fichiers », « Comportement hors-ligne »).
-   Ce fichier-ci peut ensuite être supprimé.
-4. Tester sur un téléphone, en priorité : démarrage en mode avion après plus d'une heure
-   d'inactivité ; saisie avec 1 barre de signal ; retour du réseau ; envoi d'une photo
-   (le nouvel envoi natif n'a jamais tourné sur un appareil) ; carte native (marqueurs,
-   bouton « tout voir », plus de recadrage automatique).
+1. **Tester sur un téléphone**, en priorité :
+   - démarrage en mode avion après plus d'une heure d'inactivité ;
+   - saisie avec 1 barre de signal, puis retour du réseau ;
+   - envoi d'une photo — le nouvel envoi natif (`expo-file-system`) n'a jamais tourné sur un appareil ;
+   - carte native : marqueurs, prise en attente, bouton « tout voir », plus de recadrage automatique.
+2. Décider du fond de carte hors-ligne (voir les limites ci-dessous).
+3. Ce fichier peut être supprimé une fois ces points traités : `CLAUDE.md` décrit
+   maintenant la nouvelle architecture (section « Mode hors-ligne »).
 
 ## Limites connues, non traitées
 
