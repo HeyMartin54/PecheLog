@@ -66,7 +66,7 @@ Règles à respecter dans tout nouveau code :
 | Vérification | État |
 |---|---|
 | `npx tsc --noEmit` | OK (seule erreur : `components/ExternalLink.tsx`, antérieure au chantier — les types de routes ne sont pas générés hors d'un `expo start`) |
-| `npm test` (Jest, 9 fichiers dans `__tests__/`) | **118 tests réussis** |
+| `npm test` (Jest, 11 fichiers dans `__tests__/`) | **139 tests réussis**, dont l'écran de carte natif (`map.tsx`, carte Google simulée) et l'envoi natif des photos |
 | Scénario navigateur `e2e/offline-scenario.mjs` | **25 vérifications sur 25**, aucune erreur JavaScript dans la page |
 | Bundle Android (`npx expo export -p android`) | OK : le code mobile se compile (ne prouve pas son comportement à l'exécution) |
 | Appareil Android / iOS réel | **Jamais testé.** Aucun émulateur dans l'environnement de travail |

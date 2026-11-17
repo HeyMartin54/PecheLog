@@ -304,7 +304,7 @@ Le cas à ne jamais oublier est le **signal faible** : le téléphone se dit con
 - **Blob + FormData** : inutilisable sur React Native. L'envoi de fichiers passe par `expo-file-system` (`lib/uploadMedia.ts`).
 
 ### Tests
-- `npm test` — tests Jest de la file, de la synchronisation, du moteur, du magasin, des voyages, des leurres et du client Supabase (`__tests__/`).
+- `npm test` — tests Jest de la file, de la synchronisation, du moteur, du magasin, des voyages, des leurres, du client Supabase, de l'envoi natif des photos et de l'écran de carte natif (`__tests__/`).
 - `e2e/` — scénario navigateur contre un faux serveur Supabase : en ligne → serveur injoignable → redémarrage → retour du réseau (voir l'en-tête de `e2e/offline-scenario.mjs`).
 
 ### Non implémenté ❌
