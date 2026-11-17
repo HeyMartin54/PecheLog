@@ -106,6 +106,26 @@ node e2e/offline-scenario.mjs
 Playwright n'est pas une dépendance du projet (chargé par `require`, installation globale).
 Les captures d'écran vont dans `e2e/shots/` (ignoré par git).
 
+## Compiler l'APK Android (EAS)
+
+L'utilisateur installe des APK du profil `preview` (distribution interne), tous signés
+avec la clé EAS par défaut du projet `@nitram54/PecheLog` : un nouvel APK `preview`
+s'installe **par-dessus** l'app existante, données locales conservées.
+
+- Un jeton Expo (compte de service « Claude », admin du compte `nitram54`) est enregistré
+  comme secret réseau de l'environnement cloud « Maison » pour `api.expo.dev`. Le proxy
+  l'injecte ; le CLI a seulement besoin d'une valeur fictive :
+  ```bash
+  EXPO_TOKEN=proxy-injected npx eas-cli build -p android --profile preview --non-interactive --no-wait
+  ```
+- Les clés `EXPO_PUBLIC_GOOGLE_MAPS_KEY` et `EXPO_PUBLIC_OPENWEATHER_API_KEY` sont dans
+  l'environnement EAS `preview` (aussi `production` et `development`).
+- **Ne pas compiler sans jeton valide** (consigne de l'utilisateur) : pas de compilation
+  locale signée avec une autre clé, qui obligerait à désinstaller l'app et perdrait les
+  prises non synchronisées.
+- Compilation du commit `e6bf32f` : build `5d159bed-c1de-460c-9c9e-3da1a89be052`
+  (https://expo.dev/accounts/nitram54/projects/PecheLog/builds/5d159bed-c1de-460c-9c9e-3da1a89be052).
+
 ## Reste à faire
 
 1. **Tester sur un téléphone**, en priorité :
